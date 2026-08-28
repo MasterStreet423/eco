@@ -292,6 +292,56 @@ def test_el_propio_le_gana_al_heredado(tmp_path, monkeypatch):
     assert m._conf_por_defecto() == str(tmp_path / "eco" / "conocidos.conf")
 
 
+# ── MAC directa ───────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("entrada", [
+    "AA:BB:CC:DD:EE:FF", "aa:bb:cc:dd:ee:ff", "aa-bb-cc-dd-ee-ff",
+    "aabb.ccdd.eeff".replace("aabb", "aabb"), "aabbccddeeff", " aa:bb:cc:dd:ee:ff ",
+])
+def test_normalizar_mac_acepta_los_formatos_de_la_calle(entrada):
+    assert m.normalizar_mac(entrada) == "AA:BB:CC:DD:EE:FF"
+
+
+def test_formato_cisco():
+    assert m.normalizar_mac("1122.3344.5566") == "11:22:33:44:55:66"
+
+
+@pytest.mark.parametrize("entrada", [
+    "torre", "192.168.1.65", ".65", "5", "", "AA:BB:CC:DD:EE",       # corta
+    "AA:BB:CC:DD:EE:FF:00", "ZZ:BB:CC:DD:EE:FF", "impresora-1234",
+])
+def test_lo_que_no_es_mac_no_pasa_por_mac(entrada):
+    assert m.normalizar_mac(entrada) is None
+
+
+def test_nombrar_una_mac_no_resuelve_ni_pinguea(conf, monkeypatch):
+    """Con la MAC en la mano no hay nada que buscar: es la clave misma."""
+    def explota(*a, **k):
+        raise AssertionError("no debería consultar la red teniendo la MAC")
+    monkeypatch.setattr(m, "resolver", explota)
+    monkeypatch.setattr(m, "mac_de", explota)
+    monkeypatch.setattr(m, "macs_arp", lambda: {})
+    assert m.apodar("aa:bb:cc:dd:ee:ff", "impresora") == 0
+    assert m.leer_conocidos() == {"AA:BB:CC:DD:EE:FF": "impresora"}
+
+
+def test_una_mac_apagada_igual_se_guarda(conf, monkeypatch):
+    monkeypatch.setattr(m, "macs_arp", lambda: {})
+    assert m.apodar("00:11:22:33:44:55", "impresora-apagada") == 0
+    assert m.leer_conocidos() == {"00:11:22:33:44:55": "impresora-apagada"}
+
+
+def test_renombrar_por_mac_pisa_lo_que_puso_el_barrido(conf, monkeypatch):
+    """La clave es la misma, así que no puede quedar duplicada."""
+    monkeypatch.setattr(m, "macs_arp", lambda: {})
+    monkeypatch.setattr(m, "resolver", lambda o: ("192.168.1.65", None))
+    monkeypatch.setattr(m, "ips_propias", lambda: set())
+    monkeypatch.setattr(m, "mac_de", lambda ip: "AA:BB:CC:DD:EE:FF")
+    m.apodar("192.168.1.65", "por-ip")
+    m.apodar("AA:BB:CC:DD:EE:FF", "por-mac")
+    assert m.leer_conocidos() == {"AA:BB:CC:DD:EE:FF": "por-mac"}
+    assert len([l for l in conf.read_text().splitlines() if "AA:BB" in l]) == 1
+
+
 # ── resolver ──────────────────────────────────────────────────────────────────
 def test_el_punto_completa_con_la_red_propia(monkeypatch):
     monkeypatch.setattr(m, "prefijo_local", lambda: "192.168.1")

@@ -42,7 +42,7 @@ TEXTOS = {
  "h_flujo": "forzar flujo aunque sean hartos",
  "h_todos": "mostrar también los que no contestan",
  "h_nombres": "DNS inverso de los que contestan",
- "h_nombrar": "ponerle nombre a un equipo: --nombrar <fila|IP|nombre> <apodo>",
+ "h_nombrar": "ponerle nombre a un equipo: --nombrar <fila|IP|MAC|nombre> <apodo>",
  "h_relativo": "chispa con zoom al mín/máx de cada fila, en vez de escala absoluta",
  "h_lineas": "flujo como log vertical, una línea por paquete (para pipes)",
  "h_plano": "sin colores, salida tabulada",
@@ -76,7 +76,7 @@ TEXTOS = {
  "ej_nombrar_ip": "eco --nombrar <IP> <nombre>",
  "cortado": "\n  cortado",
  # apodar
- "uso_nombrar": "  uso: eco --nombrar <fila-del-barrido | IP | nombre> <apodo>",
+ "uso_nombrar": "  uso: eco --nombrar <fila | IP | MAC | nombre> <apodo>",
  "uso_nombrar2": "       eco --nombrar 5 impresora-barra",
  "uso_nombrar3": "       eco --nombrar .65 impresora-barra",
  "sin_barrido": "  no hay barrido previo — corre primero `eco 192.168.1.0/24`",
@@ -89,6 +89,10 @@ TEXTOS = {
  "sin_arp3": "    de un router no hay MAC). Se guardará por IP.",
  "por_mac": "MAC",
  "por_ip": "IP (sin MAC: está fuera de tu LAN)",
+ "mac_directa": "    MAC indicada a mano, no hizo falta buscarla",
+ "mac_conectada": "    ahora mismo responde en {ip}",
+ "mac_ausente": "    no está conectada en este momento; el nombre queda esperándola",
+ "mac_aleatoria": "    ojo: es una MAC aleatoria, el equipo la va a cambiar solo",
  "apodado": "nombrado con eco el",
  "cabecera_conf": "# Equipos conocidos de la red: clave | nombre | tipo | nota",
  "guardado": "    guardado en {f}",
@@ -97,7 +101,7 @@ eco — ping en paralelo a múltiples destinos, con tabla en vivo y barrido de r
 
 USO
   eco [opciones] <destino>...
-  eco --nombrar <fila | dirección | nombre> <apodo>
+  eco --nombrar <fila | dirección | MAC | nombre> <apodo>
 
 DESCRIPCIÓN
   eco envía peticiones ICMP echo a uno o varios destinos y presenta las
@@ -139,7 +143,8 @@ OPCIONES
                                               máximo de cada fila.
   -l, --lineas         (--lines, --log)       Emitir el flujo como registro
                                               vertical, una línea por paquete.
-      --nombrar D A    (--name)               Asociar el apodo A al destino D.
+      --nombrar D A    (--name)               Asociar el apodo A al destino D,
+                                              que puede ser una MAC.
       --plano          (--plain)              Salida sin color, separada por
                                               tabuladores.
       --idioma L       (--lang)               Idioma de la salida: es o en.
@@ -166,6 +171,17 @@ NOMBRAR EQUIPOS
     eco --nombrar .65 impresora-barra
     eco --nombrar 192.168.1.65 impresora-barra
     eco --nombrar torre servidor-casa
+
+  También se acepta una dirección MAC, que se asocia sin más trámite: no hay
+  nada que consultar, porque la MAC es precisamente la clave con la que se
+  guarda el apodo. Sirve para bautizar un equipo apagado, o uno que todavía no
+  se ha conectado, leyendo la MAC de su etiqueta:
+
+    eco --nombrar a4:b1:c2:d3:e4:f5 impresora-barra
+    eco --nombrar a4b1c2d3e4f5 impresora-barra
+
+  Se admiten los separadores «:», «-» y «.», y también los doce dígitos sin
+  separar.
 
   Un número sin puntos se interpreta siempre como fila del barrido, nunca como
   dirección; para la .5 de la red local, escríbase «.5». Los apodos con
@@ -215,7 +231,7 @@ NOTAS
  "h_flujo": "force stream mode even for many hosts",
  "h_todos": "also show the hosts that never answer",
  "h_nombres": "reverse DNS for the hosts that answer",
- "h_nombrar": "name a host: --name <row|IP|hostname> <nickname>",
+ "h_nombrar": "name a host: --name <row|IP|MAC|hostname> <nickname>",
  "h_relativo": "sparkline zoomed to each row's min/max instead of an absolute scale",
  "h_lineas": "stream as a vertical log, one line per packet (for pipes)",
  "h_plano": "no colors, tab-separated output",
@@ -244,7 +260,7 @@ NOTAS
  "ej_nombrar_fila": "eco --name <#> <name>",
  "ej_nombrar_ip": "eco --name <IP> <name>",
  "cortado": "\n  stopped",
- "uso_nombrar": "  usage: eco --name <sweep-row | IP | hostname> <nickname>",
+ "uso_nombrar": "  usage: eco --name <row | IP | MAC | hostname> <nickname>",
  "uso_nombrar2": "         eco --name 5 printer-bar",
  "uso_nombrar3": "         eco --name .65 printer-bar",
  "sin_barrido": "  no previous sweep — run `eco 192.168.1.0/24` first",
@@ -257,6 +273,10 @@ NOTAS
  "sin_arp3": "    across a router). It will be saved by IP.",
  "por_mac": "MAC",
  "por_ip": "IP (no MAC: it is outside your LAN)",
+ "mac_directa": "    MAC given directly, no lookup needed",
+ "mac_conectada": "    right now it answers at {ip}",
+ "mac_ausente": "    not connected at the moment; the name will wait for it",
+ "mac_aleatoria": "    careful: this is a randomized MAC, the host will change it",
  "apodado": "named with eco on",
  "cabecera_conf": "# Known hosts on the network: key | name | type | note",
  "guardado": "    saved to {f}",
@@ -265,7 +285,7 @@ eco — ping many hosts in parallel, with a live table and network sweeps
 
 SYNOPSIS
   eco [options] <host>...
-  eco --name <row | address | hostname> <nickname>
+  eco --name <row | address | MAC | hostname> <nickname>
 
 DESCRIPTION
   eco sends ICMP echo requests to one or more hosts and presents the replies in
@@ -305,7 +325,8 @@ OPTIONS
                                               own minimum and maximum.
   -l, --lines          (--lineas, --log)      Emit the stream as a vertical
                                               log, one line per packet.
-      --name H N       (--nombrar)            Attach nickname N to host H.
+      --name H N       (--nombrar)            Attach nickname N to host H,
+                                              which may be a MAC.
       --plain          (--plano)              Uncolored, tab-separated output.
       --lang L         (--idioma)             Output language: es or en.
   -h, --help           (--ayuda)              Show this help.
@@ -330,6 +351,16 @@ NAMING HOSTS
     eco --name .65 printer-bar
     eco --name 192.168.1.65 printer-bar
     eco --name tower home-server
+
+  A MAC address is also accepted, and is bound with no further work: there is
+  nothing to look up, because the MAC is precisely the key the nickname is
+  stored under. This is how you name a host that is switched off, or one that
+  has not connected yet, reading the MAC off its label:
+
+    eco --name a4:b1:c2:d3:e4:f5 printer-bar
+    eco --name a4b1c2d3e4f5 printer-bar
+
+  The ":", "-" and "." separators are accepted, as are the twelve bare digits.
 
   A number without dots is always read as a sweep row, never as an address; for
   .5 on the local network, write ".5". Nicknames containing spaces must be
@@ -501,6 +532,19 @@ def prefijo_local():
             return ip.rsplit(".", 1)[0]
     return None
 
+def normalizar_mac(txt):
+    """AA:BB:CC:DD:EE:FF, aa-bb-cc-dd-ee-ff, aabb.ccdd.eeff o los 12 dígitos
+    pelados -> AA:BB:CC:DD:EE:FF. Devuelve None si no es una MAC.
+
+    Los 12 hex sin separador también valen porque así vienen en muchas etiquetas
+    y paneles de router; un nombre de host que sea exactamente eso es tan raro
+    que no compensa rechazar el caso útil."""
+    limpio = re.sub(r"[:.\-]", "", txt.strip())
+    if len(limpio) != 12 or not re.fullmatch(r"[0-9a-fA-F]{12}", limpio):
+        return None
+    return ":".join(limpio[i:i + 2] for i in range(0, 12, 2)).upper()
+
+
 def resolver(objetivo):
     """Un `.65`, una IP o un nombre -> (IP, error). El nombre va por `getent
     hosts` y no por socket: un subproceso sí se puede matar."""
@@ -535,7 +579,13 @@ def mac_de(ip):
 def apodar(objetivo, nombre):
     """`eco --nombrar 5 nombre` (fila del último barrido) o `eco --nombrar .65
     nombre` (IP o nombre directo, sin barrer antes)."""
-    if objetivo.isdigit():
+    directa = normalizar_mac(objetivo)
+    if directa:
+        # Con la MAC en la mano no hay nada que buscar: es justamente la clave
+        # con la que se guarda. Sirve para bautizar un equipo apagado, o uno que
+        # todavía no se conecta, leyendo la MAC de su etiqueta.
+        ip, mac = None, directa
+    elif objetivo.isdigit():
         try:
             est = json.load(open(ESTADO))
         except Exception:
@@ -559,6 +609,7 @@ def apodar(objetivo, nombre):
                 print(dim(t("sin_arp2"))); print(dim(t("sin_arp3")))
     clave = (mac or ip).upper()
     porque = t("por_mac") if mac else t("por_ip")
+
     linea = f"{clave} | {nombre} | ? | {t('apodado')} {time.strftime('%F')}"
     os.makedirs(os.path.dirname(CONOCIDOS), exist_ok=True)
     try:
@@ -571,7 +622,15 @@ def apodar(objetivo, nombre):
     else:
         lineas.append(linea)
     open(CONOCIDOS, "w").write("\n".join(lineas) + "\n")
-    print(f"  {verde('✔')} {ip} {dim('(' + porque + ' ' + clave + ')')} → {bold(nombre)}")
+    if directa:
+        print(f"  {verde('✔')} {clave} → {bold(nombre)}")
+        print(dim(t("mac_directa")))
+        vista = next((i for i, mm in macs_arp().items() if mm == clave), None)
+        print(dim(t("mac_conectada", ip=vista)) if vista else dim(t("mac_ausente")))
+        if aleatoria(clave):
+            print(ambar(t("mac_aleatoria")))
+    else:
+        print(f"  {verde('✔')} {ip} {dim('(' + porque + ' ' + clave + ')')} → {bold(nombre)}")
     print(dim(t("guardado", f=CONOCIDOS)))
     return 0
 

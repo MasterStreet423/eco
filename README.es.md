@@ -65,6 +65,17 @@ eco --nombrar 192.168.1.65 impresora-barra
 eco --nombrar torre servidor-casa
 ```
 
+También acepta una **MAC directa**, que se asocia sin consultar nada: la MAC *es*
+la clave con la que se guarda. Así puedes bautizar un equipo apagado, o uno que
+todavía no se conecta, leyendo la MAC de su etiqueta:
+
+```bash
+eco --nombrar a4:b1:c2:d3:e4:f5 impresora-barra
+eco --nombrar a4b1c2d3e4f5 impresora-barra   # sin separadores también
+```
+
+Valen los separadores `:`, `-` y `.` (formato Cisco), y los doce dígitos pelados.
+
 Los nombres se guardan **por MAC**, así que aguantan que el DHCP le cambie la IP
 al equipo. Los que no tienen MAC visible (todo lo que esté al otro lado de un
 router) caen a guardarse por IP.

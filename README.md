@@ -66,6 +66,17 @@ eco --name 192.168.1.65 printer-bar
 eco --name tower home-server
 ```
 
+It also takes a **MAC directly**, bound with no lookup at all: the MAC *is* the
+key it gets stored under. That is how you name a host that is switched off, or
+one that has not connected yet, reading the MAC off its label:
+
+```bash
+eco --name a4:b1:c2:d3:e4:f5 printer-bar
+eco --name a4b1c2d3e4f5 printer-bar   # bare digits work too
+```
+
+The `:`, `-` and `.` (Cisco) separators all work, as do the twelve bare digits.
+
 Names are stored **by MAC**, so they survive a DHCP lease change. Hosts with no
 visible MAC (anything across a router) fall back to being stored by IP.
 
