@@ -6,11 +6,10 @@ Pingear muchas cosas a la vez y que se entienda de una mirada.
 
 El nombre es lo que hace: manda un ICMP **echo** y escucha el eco.
 
-`eco` es el hermano del `ping` de toda la vida, pero pensado para redes y no
-para un solo equipo. Le das una dirección o un `/24` entero y él elige el modo
-solo — una tabla viva que se redibuja en el sitio, o un barrido paralelo de la
-red. Saca las MAC de la tabla ARP y te deja ponerle nombres a los equipos que
-después se reconocen solos.
+`eco` es `ping` apuntado a una red y no a un solo equipo. Le das una dirección o
+un `/24` entero y él elige el modo solo — una tabla viva que se redibuja en el
+sitio, o un barrido paralelo. Saca las MAC de la tabla ARP y te deja ponerle
+nombres a los equipos que después se reconocen solos.
 
 Un archivo, Python 3 con pura librería estándar, cero dependencias.
 
@@ -68,8 +67,13 @@ eco --nombrar torre servidor-casa
 
 Los nombres se guardan **por MAC**, así que aguantan que el DHCP le cambie la IP
 al equipo. Los que no tienen MAC visible (todo lo que esté al otro lado de un
-router) caen a guardarse por IP. El archivo es `~/.config/lan/conocidos.conf`,
-compartido con la herramienta `lan`; se cambia con `ECO_CONF`.
+router) caen a guardarse por IP.
+
+El archivo es `~/.config/eco/conocidos.conf`, una línea por equipo con el
+formato `clave | nombre | tipo | nota`. Si ya existe
+`~/.config/lan/conocidos.conf` y el primero no, se usa ese: varias herramientas
+de red comparten el formato, y pisar los nombres que ya tenías puestos sería
+peor que heredar el directorio. Con `ECO_CONF` se cambia la ruta.
 
 > Un número pelado siempre es fila del barrido, nunca una dirección. Para la `.5`
 > de tu propia red, escribe `.5`.
@@ -117,8 +121,9 @@ escala fija, `▁` es siempre como un milisegundo y `█` es siempre un desastre
 ## Advertencias
 
 Que alguien no conteste ICMP no significa que esté muerto — Windows con
-firewall, cámaras y celulares en ahorro de batería lo filtran. Para saber qué
-hay de verdad en la red, la fuente honesta es ARP.
+firewall, cámaras y celulares en ahorro de batería lo filtran. Para saber *quién*
+está conectado y no cómo responde, la fuente fiable es la tabla ARP (`ip neigh`),
+que ahí nadie se esconde.
 
 Las MAC solo existen para tu propia LAN; al otro lado de un router no hay nada
 que leer. Un `~` después de una MAC significa que es aleatoria (Android, iOS y

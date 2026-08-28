@@ -270,6 +270,28 @@ def test_apodar_por_fila_usa_la_mac_de_esa_fila(conf, tmp_path, monkeypatch):
     assert m.leer_conocidos() == {"11:22:33:44:55:66": "router"}
 
 
+# ── dónde vive el archivo de apodos ───────────────────────────────────────────
+def test_usuario_nuevo_usa_su_propio_directorio(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert m._conf_por_defecto() == str(tmp_path / "eco" / "conocidos.conf")
+
+
+def test_hereda_el_conf_que_el_usuario_ya_tenia(tmp_path, monkeypatch):
+    """Pisar los nombres ya puestos sería peor que heredar el directorio."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    (tmp_path / "lan").mkdir()
+    (tmp_path / "lan" / "conocidos.conf").write_text("")
+    assert m._conf_por_defecto() == str(tmp_path / "lan" / "conocidos.conf")
+
+
+def test_el_propio_le_gana_al_heredado(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    for d in ("lan", "eco"):
+        (tmp_path / d).mkdir()
+        (tmp_path / d / "conocidos.conf").write_text("")
+    assert m._conf_por_defecto() == str(tmp_path / "eco" / "conocidos.conf")
+
+
 # ── resolver ──────────────────────────────────────────────────────────────────
 def test_el_punto_completa_con_la_red_propia(monkeypatch):
     monkeypatch.setattr(m, "prefijo_local", lambda: "192.168.1")

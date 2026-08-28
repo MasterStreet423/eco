@@ -12,10 +12,19 @@ def _xdg(var, defecto):
     base = os.environ.get(var) or os.path.expanduser(defecto)
     return base
 
-# Names live in the same file `lan` uses, so a nickname set here shows up there.
-# ECO_CONF (or the older LAN_CONF) overrides it.
+def _conf_por_defecto():
+    """~/.config/eco/conocidos.conf, salvo que ya exista ~/.config/lan con el
+    mismo formato: varias herramientas de red comparten ese archivo, y pisar los
+    nombres que el usuario ya tiene puestos sería peor que heredar el directorio."""
+    base = _xdg("XDG_CONFIG_HOME", "~/.config")
+    propio   = os.path.join(base, "eco", "conocidos.conf")
+    heredado = os.path.join(base, "lan", "conocidos.conf")
+    if not os.path.exists(propio) and os.path.exists(heredado):
+        return heredado
+    return propio
+
 CONOCIDOS = (os.environ.get("ECO_CONF") or os.environ.get("LAN_CONF")
-             or os.path.join(_xdg("XDG_CONFIG_HOME", "~/.config"), "lan", "conocidos.conf"))
+             or _conf_por_defecto())
 ESTADO    = os.path.join(_xdg("XDG_CACHE_HOME", "~/.cache"), "eco", "ultimo.json")
 
 # ── i18n ──────────────────────────────────────────────────────────────────────
@@ -82,72 +91,118 @@ TEXTOS = {
  "por_ip": "IP (sin MAC: está fuera de tu LAN)",
  "apodado": "nombrado con eco el",
  "cabecera_conf": "# Equipos conocidos de la red: clave | nombre | tipo | nota",
- "guardado": "    guardado en {f} · lo ve también `lan`",
+ "guardado": "    guardado en {f}",
  "ayuda": """
-eco: pingear muchas cosas a la vez y que se entienda de una mirada.
+eco — ping en paralelo a múltiples destinos, con tabla en vivo y barrido de red
 
-El nombre es lo que hace: manda un ICMP echo y escucha el eco. Hermano de `lan`,
-pero al revés: `lan` te dice QUIÉN está en la red (por ARP, una foto), `eco` te
-dice CÓMO está el camino hacia uno o varios equipos (por ICMP, en vivo). Sirve
-para pillar el wifi que se cae, la impresora que se cuelga o el server que
-responde lento.
+USO
+  eco [opciones] <destino>...
+  eco --nombrar <fila | dirección | nombre> <apodo>
 
-Dos modos, elegidos solos según cuántos destinos le des:
+DESCRIPCIÓN
+  eco envía peticiones ICMP echo a uno o varios destinos y presenta las
+  respuestas en una tabla legible. Elige el modo según la cantidad de destinos:
 
-  flujo   (<= 12 destinos)  tabla viva: una fila por destino que se redibuja
-                            sola con el último ms, la pérdida, min/prom/máx y
-                            el historial. Ctrl-C corta y deja la tabla quieta.
-                            Con -l sale como log vertical (para pipes).
-  barrido (> 12 destinos)   manda unos pocos paquetes a cada uno en paralelo
-                            y arma la tabla de quién contesta y con cuánto ms.
+  flujo     hasta 12 destinos. Tabla en vivo, una fila por destino, que se
+            redibuja en el sitio con la última latencia, la pérdida, los
+            valores mínimo/promedio/máximo y un histograma del historial.
+            Ctrl-C detiene la ejecución y deja la tabla en pantalla.
 
-Uso:
-  eco 192.168.1.1 8.8.8.8            flujo, ping continuo a dos
-  eco 192.168.1.{1,2,3,4}            idem (bash expande las llaves solo)
-  eco '192.168.1.{1,2,3,4}'          igual, comillado lo expando yo
-  eco 192.168.1.0/24                 barrido de la red completa
-  eco 192.168.1.1-20                 barrido de un rango
-  eco -c 5 192.168.1.1               solo 5 paquetes y para
-  eco -i 0.3 torre                   más rápido (bajo 0.2 pide root)
-  eco --barrido 192.168.1.1 torre    fuerza tabla en vez de flujo
-  eco --todos 192.168.1.0/24         la tabla incluye los que no contestan
-  eco --dns 192.168.1.0/24           además, DNS inverso de los vivos
+  barrido   más de 12 destinos. Envía unos pocos paquetes a cada destino en
+            paralelo y compone una tabla numerada de qué responde, con qué
+            latencia y con qué dirección MAC.
 
-Todas las opciones largas tienen su gemela en inglés: --todos = --all,
---barrido = --sweep, --nombrar = --name, y así. El idioma de la salida sale de
-tu locale; se fuerza con --idioma es|en o con ECO_LANG.
+  Las opciones -f y -b fuerzan un modo u otro.
 
-En el barrido cada fila va numerada y trae su MAC (sale de la tabla ARP, que
-los propios pings dejan calentita; al otro lado de un router no hay MAC). Para
-bautizar un equipo:
+DESTINOS
+  Se aceptan direcciones, nombres de host, redes en notación CIDR
+  (192.168.1.0/24), rangos (192.168.1.1-20) y llaves (192.168.1.{1,5,9} o
+  192.168.1.{1..20}). Las llaves las expande el intérprete de comandos; si se
+  entrecomillan, las expande eco.
 
-  eco --nombrar 5 impresora-barra    la fila 5 del último barrido pasa a
-                                     llamarse así, y se reconoce sola en los
-                                     barridos siguientes
+OPCIONES
+  Cada opción larga tiene una equivalente en inglés, indicada entre paréntesis.
 
-Si ya sabes a quién quieres bautizar no hace falta barrer antes: dale la IP (o
-un nombre) en vez del número de fila y él busca la MAC solo, pingueándola si la
-tabla ARP está fría. Un punto adelante completa con tu propia red:
+  -c, --cuenta N       (--count)              Paquetes por destino.
+  -i, --intervalo S    (--interval)           Segundos entre paquetes. Bajo
+                                              0.2 requiere privilegios de root.
+  -W, --espera S       (--wait, --timeout)    Tiempo de espera por paquete.
+  -p, --paralelo N     (--parallel)           Pings simultáneos en un barrido.
+                                              Por omisión, 96.
+  -b, --barrido        (--sweep, --scan)      Forzar el modo barrido.
+  -f, --flujo          (--stream, --live)     Forzar el modo flujo.
+  -t, --todos          (--all)                Incluir en la tabla los destinos
+                                              que no responden.
+  -n, --dns            (--inverso, --reverse) Resolver por DNS inverso los
+                                              destinos que responden.
+  -r, --relativo       (--relative)           Escalar el histograma al mínimo y
+                                              máximo de cada fila.
+  -l, --lineas         (--lines, --log)       Emitir el flujo como registro
+                                              vertical, una línea por paquete.
+      --nombrar D A    (--name)               Asociar el apodo A al destino D.
+      --plano          (--plain)              Salida sin color, separada por
+                                              tabuladores.
+      --idioma L       (--lang)               Idioma de la salida: es o en.
+  -h, --ayuda          (--help)               Mostrar esta ayuda.
 
-  eco --nombrar .65 impresora-barra  192.168.1.65 -> impresora-barra
-  eco --nombrar 192.168.1.65 impresora-barra
-  eco --nombrar torre servidor-casa
+EJEMPLOS
+  eco 192.168.1.1 8.8.8.8          Flujo continuo hacia dos destinos.
+  eco 192.168.1.0/24               Barrido de una red completa.
+  eco 192.168.1.1-20               Barrido de un rango.
+  eco -c 5 192.168.1.1             Cinco paquetes y termina.
+  eco -t -n 192.168.1.0/24         Barrido con inactivos y DNS inverso.
+  eco --plano 10.0.0.0/24 | grep   Salida procesable por otras herramientas.
 
-Ojo: un número pelado siempre es fila del barrido, nunca IP — para la .5 de tu
-red escribe `.5`. Si el nombre lleva espacios, va entre comillas.
+NOMBRAR EQUIPOS
+  Cada fila de un barrido va numerada, de modo que puede nombrarse por su
+  número:
 
-El apodo se guarda por MAC en ~/.config/lan/conocidos.conf — el MISMO archivo
-de `lan`, así que el nombre vale en las dos herramientas. Se guarda por IP solo
-si el equipo no tiene MAC visible. Todo vive en disco (el apodo ahí, el orden
-del último barrido en ~/.cache/eco/), así que aguanta reinicios.
+    eco --nombrar 5 impresora-barra
 
-  eco -l torre                       flujo como log, una línea por paquete
-  eco -r torre                       chispa con zoom (escala relativa)
-  eco --plano ...                    sin colores ni marcos, para grep
+  No es necesario barrer antes: si se indica una dirección en lugar de un
+  número, eco consulta la tabla ARP y, si está fría, emite un ping para
+  poblarla. Un punto inicial completa la red local:
 
-Ojo: quien no contesta ICMP no está necesariamente muerto — Windows con
-firewall, cámaras y celulares en ahorro lo filtran. Para inventario de red
-usa `lan` (ARP), que ahí nadie se esconde.
+    eco --nombrar .65 impresora-barra
+    eco --nombrar 192.168.1.65 impresora-barra
+    eco --nombrar torre servidor-casa
+
+  Un número sin puntos se interpreta siempre como fila del barrido, nunca como
+  dirección; para la .5 de la red local, escríbase «.5». Los apodos con
+  espacios deben entrecomillarse.
+
+  El apodo se asocia a la dirección MAC, no a la IP, para que sobreviva a un
+  cambio de concesión DHCP. Solo se recurre a la IP cuando el equipo no expone
+  MAC, es decir, cuando está al otro lado de un router.
+
+ARCHIVOS
+  ~/.config/eco/conocidos.conf   Apodos, una línea por equipo, con el formato
+                                 «clave | nombre | tipo | nota». Si existe
+                                 ~/.config/lan/conocidos.conf y este no, se usa
+                                 aquel.
+  ~/.cache/eco/ultimo.json       Orden del último barrido, que es lo que indexa
+                                 --nombrar. Persiste entre reinicios.
+
+ENTORNO
+  ECO_LANG     Idioma de la salida (es, en). Tiene prioridad sobre el locale.
+  ECO_CONF     Ruta alternativa del archivo de apodos.
+  NO_COLOR     Si está definida, desactiva el color.
+
+NOTAS
+  El histograma usa una escala absoluta y logarítmica, de modo que un mismo
+  bloque significa la misma latencia en todas las filas y estas resultan
+  comparables entre sí. La opción -r restituye el escalado relativo por fila,
+  que exagera variaciones irrelevantes.
+
+  La ausencia de respuesta ICMP no implica que un equipo esté apagado: los
+  cortafuegos de Windows, muchas cámaras y los teléfonos en ahorro de energía
+  descartan estas peticiones. Para determinar qué equipos están conectados, la
+  fuente fiable es la tabla ARP (ip neigh), donde ninguno puede ocultarse.
+
+  Las direcciones MAC solo existen dentro de la propia red; al otro lado de un
+  router no hay ninguna que leer. El sufijo ~ indica una MAC aleatorizada
+  —comportamiento por omisión en Android, iOS y Windows recientes— que no
+  constituye una identidad estable.
 """,
 },
 "en": {
@@ -204,73 +259,113 @@ usa `lan` (ARP), que ahí nadie se esconde.
  "por_ip": "IP (no MAC: it is outside your LAN)",
  "apodado": "named with eco on",
  "cabecera_conf": "# Known hosts on the network: key | name | type | note",
- "guardado": "    saved to {f} · `lan` reads it too",
+ "guardado": "    saved to {f}",
  "ayuda": """
-eco: ping a lot of things at once and understand it at a glance.
+eco — ping many hosts in parallel, with a live table and network sweeps
 
-The name is what it does: it sends an ICMP echo and listens for the echo back.
-The sibling of `lan`, the other way around: `lan` tells you WHO is on the
-network (via ARP, a snapshot), `eco` tells you HOW the path to one or more hosts
-is doing (via ICMP, live). Good for catching the wifi that drops, the printer
-that hangs or the server that answers slowly.
+SYNOPSIS
+  eco [options] <host>...
+  eco --name <row | address | hostname> <nickname>
 
-Two modes, picked automatically from how many hosts you give it:
+DESCRIPTION
+  eco sends ICMP echo requests to one or more hosts and presents the replies in
+  a readable table. It picks its mode from the number of hosts given:
 
-  stream (<= 12 hosts)  live table: one row per host, redrawn in place with the
-                        last ms, the loss, min/avg/max and the history. Ctrl-C
-                        stops and leaves the table on screen. With -l it comes
-                        out as a vertical log (for pipes).
-  sweep  (> 12 hosts)   sends a few packets to each one in parallel and builds
-                        the table of who answers and how fast.
+  stream    up to 12 hosts. A live table, one row per host, redrawn in place
+            with the latest latency, the loss, the minimum, average and maximum
+            values, and a histogram of the history. Ctrl-C stops execution and
+            leaves the table on screen.
 
-Usage:
-  eco 192.168.1.1 8.8.8.8          stream, continuous ping to two
-  eco 192.168.1.{1,2,3,4}          same (bash expands the braces itself)
-  eco '192.168.1.{1,2,3,4}'        same, quoted I expand them myself
-  eco 192.168.1.0/24               sweep the whole network
-  eco 192.168.1.1-20               sweep a range
-  eco -c 5 192.168.1.1             only 5 packets, then stop
-  eco -i 0.3 tower                 faster (below 0.2 needs root)
-  eco --sweep 192.168.1.1 tower    force the table instead of the stream
-  eco --all 192.168.1.0/24         the table includes hosts that never answer
-  eco --dns 192.168.1.0/24         plus reverse DNS of the ones that are up
+  sweep     more than 12 hosts. Sends a few packets to each host in parallel
+            and composes a numbered table of what answered, at what latency and
+            with which MAC address.
 
-Every long option has a Spanish twin: --all = --todos, --sweep = --barrido,
---name = --nombrar, and so on. The output language follows your locale; force
-it with --lang es|en or with ECO_LANG.
+  The -f and -b options force one mode or the other.
 
-In a sweep every row is numbered and carries its MAC (it comes from the ARP
-table, which the pings themselves warmed up; across a router there is no MAC).
-To name a host:
+HOSTS
+  Addresses, hostnames, CIDR networks (192.168.1.0/24), ranges
+  (192.168.1.1-20) and braces (192.168.1.{1,5,9} or 192.168.1.{1..20}) are all
+  accepted. Braces are expanded by the shell; if quoted, eco expands them.
 
-  eco --name 5 printer-bar         row 5 of the last sweep is now called that,
-                                   and recognizes itself in every sweep from
-                                   now on
+OPTIONS
+  Every long option has a Spanish equivalent, shown in parentheses.
 
-If you already know who you want to name there is no need to sweep first: give
-it the IP (or a hostname) instead of the row number and it finds the MAC on its
-own, pinging it if the ARP table is cold. A leading dot fills in your own
-network:
+  -c, --count N        (--cuenta)             Packets per host.
+  -i, --interval S     (--intervalo)          Seconds between packets. Below
+                                              0.2 requires root privileges.
+  -W, --wait S         (--espera, --timeout)  Per-packet timeout.
+  -p, --parallel N     (--paralelo)           Simultaneous pings in a sweep.
+                                              Defaults to 96.
+  -b, --sweep          (--barrido, --scan)    Force sweep mode.
+  -f, --stream         (--flujo, --live)      Force stream mode.
+  -t, --all            (--todos)              Include hosts that never answer.
+  -n, --dns            (--inverso, --reverse) Resolve answering hosts through
+                                              reverse DNS.
+  -r, --relative       (--relativo)           Scale the histogram to each row's
+                                              own minimum and maximum.
+  -l, --lines          (--lineas, --log)      Emit the stream as a vertical
+                                              log, one line per packet.
+      --name H N       (--nombrar)            Attach nickname N to host H.
+      --plain          (--plano)              Uncolored, tab-separated output.
+      --lang L         (--idioma)             Output language: es or en.
+  -h, --help           (--ayuda)              Show this help.
 
-  eco --name .65 printer-bar       192.168.1.65 -> printer-bar
-  eco --name 192.168.1.65 printer-bar
-  eco --name tower home-server
+EXAMPLES
+  eco 192.168.1.1 8.8.8.8         Continuous stream to two hosts.
+  eco 192.168.1.0/24              Sweep an entire network.
+  eco 192.168.1.1-20              Sweep a range.
+  eco -c 5 192.168.1.1            Five packets, then stop.
+  eco -t -n 192.168.1.0/24        Sweep with dead hosts and reverse DNS.
+  eco --plain 10.0.0.0/24 | grep  Output other tools can consume.
 
-Careful: a bare number is always a sweep row, never an IP — for .5 on your own
-network write `.5`. Quote the nickname if it has spaces in it.
+NAMING HOSTS
+  Every row of a sweep is numbered, so a host can be named by its number:
 
-The nickname is stored by MAC in ~/.config/lan/conocidos.conf — the SAME file
-`lan` uses, so the name works in both tools. It falls back to storing by IP
-only when the host has no visible MAC. Everything lives on disk (the nickname
-there, the last sweep's order in ~/.cache/eco/), so it survives reboots.
+    eco --name 5 printer-bar
 
-  eco -l tower                     stream as a log, one line per packet
-  eco -r tower                     sparkline with zoom (relative scale)
-  eco --plain ...                  no colors or frames, for grep
+  Sweeping first is not required: given an address instead of a number, eco
+  consults the ARP table and, if it is cold, emits a ping to populate it. A
+  leading dot completes the local network:
 
-Careful: whoever does not answer ICMP is not necessarily dead — Windows with a
-firewall, cameras and phones on battery saver filter it out. For a network
-inventory use `lan` (ARP), where nobody can hide.
+    eco --name .65 printer-bar
+    eco --name 192.168.1.65 printer-bar
+    eco --name tower home-server
+
+  A number without dots is always read as a sweep row, never as an address; for
+  .5 on the local network, write ".5". Nicknames containing spaces must be
+  quoted.
+
+  The nickname is bound to the MAC address rather than the IP, so that it
+  survives a DHCP lease change. It falls back to the IP only when the host
+  exposes no MAC, that is, when it sits across a router.
+
+FILES
+  ~/.config/eco/conocidos.conf   Nicknames, one line per host, formatted
+                                 "key | name | type | note". If
+                                 ~/.config/lan/conocidos.conf exists and this
+                                 one does not, the former is used.
+  ~/.cache/eco/ultimo.json       The last sweep's ordering, which is what
+                                 --name indexes. Persists across reboots.
+
+ENVIRONMENT
+  ECO_LANG     Output language (es, en). Takes precedence over the locale.
+  ECO_CONF     Alternate path for the nicknames file.
+  NO_COLOR     If set, disables color.
+
+NOTES
+  The histogram uses an absolute, logarithmic scale, so that a given block means
+  the same latency in every row and rows stay comparable with one another. The
+  -r option restores per-row relative scaling, which exaggerates irrelevant
+  variation.
+
+  A missing ICMP reply does not mean a host is down: Windows firewalls, many
+  cameras and phones in power-saving mode discard these requests. To determine
+  which hosts are connected, the reliable source is the ARP table (ip neigh),
+  where none of them can hide.
+
+  MAC addresses only exist within your own network; across a router there is
+  none to read. A trailing ~ marks a randomized MAC — the default behavior on
+  recent Android, iOS and Windows — which is not a stable identity.
 """,
 },
 }
@@ -347,7 +442,7 @@ def leyenda_escala():
 
 # ── identidad de cada IP ─────────────────────────────────────────────────────
 def leer_conocidos():
-    """clave (MAC o IP) -> nombre, del conocidos.conf que también usa `lan`."""
+    """clave (MAC o IP) -> nombre, leído de conocidos.conf."""
     d = {}
     try:
         with open(CONOCIDOS) as f:

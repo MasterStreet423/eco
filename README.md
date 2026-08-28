@@ -7,11 +7,10 @@ Ping a lot of things at once and understand it at a glance.
 The name is what it does: it sends an ICMP **echo** and listens for the echo
 back.
 
-`eco` is the sibling of a plain `ping`, aimed at networks rather than at a
-single host. Give it one address or a whole `/24` and it picks the right mode on
-its own — a live table that redraws in place, or a parallel sweep of the network.
-It reads MAC addresses out of the ARP table, and lets you give hosts names that
-stick.
+`eco` is `ping` aimed at a network rather than at a single host. Give it one
+address or a whole `/24` and it picks the right mode on its own — a live table
+that redraws in place, or a parallel sweep. It reads MAC addresses out of the
+ARP table, and lets you give hosts names that stick.
 
 Single file, Python 3 standard library only, no dependencies.
 
@@ -68,9 +67,13 @@ eco --name tower home-server
 ```
 
 Names are stored **by MAC**, so they survive a DHCP lease change. Hosts with no
-visible MAC (anything across a router) fall back to being stored by IP. The file
-is `~/.config/lan/conocidos.conf`, shared with the `lan` tool; override it with
-`ECO_CONF`.
+visible MAC (anything across a router) fall back to being stored by IP.
+
+The file is `~/.config/eco/conocidos.conf`, one line per host formatted
+`key | name | type | note`. If `~/.config/lan/conocidos.conf` already exists and
+the former does not, that one is used instead — several network tools share this
+format, and overwriting names you already set would be worse than inheriting the
+directory. `ECO_CONF` overrides the path.
 
 > A bare number is always a sweep row, never an address. For `.5` on your own
 > network, write `.5`.
@@ -118,8 +121,9 @@ zoom back if you want it.
 ## Caveats
 
 Not answering ICMP does not mean a host is dead — Windows with a firewall,
-cameras and phones on battery saver all filter it. For an inventory of what is
-actually on the network, ARP is the honest source.
+cameras and phones on battery saver all filter it. To find out *who* is
+connected rather than how they respond, the reliable source is the ARP table
+(`ip neigh`), where nobody can hide.
 
 MAC addresses only exist for your own LAN; across a router there is nothing to
 read. A `~` after a MAC means it is randomized (Android/iOS/Windows do this by
