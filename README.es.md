@@ -1,10 +1,12 @@
-# mping
+# eco
 
 Pingear muchas cosas a la vez y que se entienda de una mirada.
 
 *[Read this in English](README.md)*
 
-`mping` es el hermano del `ping` de toda la vida, pero pensado para redes y no
+El nombre es lo que hace: manda un ICMP **echo** y escucha el eco.
+
+`eco` es el hermano del `ping` de toda la vida, pero pensado para redes y no
 para un solo equipo. Le das una dirección o un `/24` entero y él elige el modo
 solo — una tabla viva que se redibuja en el sitio, o un barrido paralelo de la
 red. Saca las MAC de la tabla ARP y te deja ponerle nombres a los equipos que
@@ -15,8 +17,8 @@ Un archivo, Python 3 con pura librería estándar, cero dependencias.
 ## Instalar
 
 ```bash
-curl -o ~/.local/bin/mping https://raw.githubusercontent.com/MasterStreet423/mping/main/mping
-chmod +x ~/.local/bin/mping
+curl -o ~/.local/bin/eco https://raw.githubusercontent.com/MasterStreet423/eco/main/eco
+chmod +x ~/.local/bin/eco
 ```
 
 Necesita Python 3.9+, `iproute2` (`ip`) e `iputils` (`ping`). Por ahora solo
@@ -40,10 +42,10 @@ y deja la tabla quieta en pantalla.
 tabla numerada de quién contestó, con cuánto ms y con qué MAC.
 
 ```bash
-mping 192.168.1.0/24          # la red completa
-mping 192.168.1.1-20          # un rango
-mping --todos 192.168.1.0/24  # incluye a los que no contestan
-mping --nombres 10.0.0.0/24   # además, DNS inverso
+eco 192.168.1.0/24          # la red completa
+eco 192.168.1.1-20          # un rango
+eco --todos 192.168.1.0/24  # incluye a los que no contestan
+eco --dns 10.0.0.0/24       # además, DNS inverso
 ```
 
 ## Ponerle nombre a un equipo
@@ -51,23 +53,23 @@ mping --nombres 10.0.0.0/24   # además, DNS inverso
 El barrido numera cada fila, así que puedes bautizar una:
 
 ```bash
-mping app 5 impresora-barra
+eco --nombrar 5 impresora-barra
 ```
 
 Y si ya sabes a quién quieres bautizar, sáltate el barrido: dale la dirección
-directo y `mping` busca la MAC solo, pingueando al equipo si la tabla ARP está
+directo y `eco` busca la MAC solo, pingueando al equipo si la tabla ARP está
 fría. Un punto adelante completa con tu propia red:
 
 ```bash
-mping app .65 impresora-barra          # -> 192.168.1.65
-mping app 192.168.1.65 impresora-barra
-mping app torre servidor-casa
+eco --nombrar .65 impresora-barra          # -> 192.168.1.65
+eco --nombrar 192.168.1.65 impresora-barra
+eco --nombrar torre servidor-casa
 ```
 
 Los nombres se guardan **por MAC**, así que aguantan que el DHCP le cambie la IP
 al equipo. Los que no tienen MAC visible (todo lo que esté al otro lado de un
 router) caen a guardarse por IP. El archivo es `~/.config/lan/conocidos.conf`,
-compartido con la herramienta `lan`; se cambia con `MPING_CONF`.
+compartido con la herramienta `lan`; se cambia con `ECO_CONF`.
 
 > Un número pelado siempre es fila del barrido, nunca una dirección. Para la `.5`
 > de tu propia red, escribe `.5`.
@@ -78,8 +80,8 @@ La salida sigue tu locale, y cada opción larga tiene su gemela en el otro
 idioma, así que estos dos son el mismo comando:
 
 ```bash
-mping --todos --nombres 192.168.1.0/24
-mping --all   --names   192.168.1.0/24
+eco --todos --barrido 192.168.1.0/24
+eco --all   --sweep   192.168.1.0/24
 ```
 
 | Español | Inglés | |
@@ -91,13 +93,14 @@ mping --all   --names   192.168.1.0/24
 | `--barrido` | `--sweep`, `--scan` | forzar la tabla |
 | `--flujo` | `--stream`, `--live` | forzar la tabla viva |
 | `--todos` | `--all` | incluir a los que no contestan |
-| `--nombres` | `--names`, `--dns` | DNS inverso |
+| `--inverso` | `--dns`, `--reverse` | DNS inverso |
+| `--nombrar` | `--name` | ponerle nombre a un equipo |
 | `--relativo` | `--relative` | chispa con escala relativa |
 | `--lineas` | `--lines`, `--log` | log vertical, para pipes |
 | `--plano` | `--plain` | sin colores, tabulado |
 | `--idioma` | `--lang` | forzar `es` o `en` |
 
-Se fuerza con `--idioma en` o con `MPING_LANG=en`.
+Se fuerza con `--idioma en` o con `ECO_LANG=en`.
 
 ## Por qué la escala de la chispa es absoluta
 

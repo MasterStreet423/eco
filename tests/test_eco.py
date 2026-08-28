@@ -9,12 +9,12 @@ from pathlib import Path
 import pytest
 
 RAIZ = Path(__file__).resolve().parent.parent
-FUENTE = RAIZ / "mping"
+FUENTE = RAIZ / "eco"
 
 
 def cargar():
     """El ejecutable no termina en .py, así que se importa a mano."""
-    spec = importlib.util.spec_from_loader("mping", SourceFileLoader("mping", str(FUENTE)))
+    spec = importlib.util.spec_from_loader("eco", SourceFileLoader("eco", str(FUENTE)))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -54,10 +54,10 @@ def test_los_textos_con_placeholder_coinciden_entre_idiomas():
     ({"LANG": "en_US.UTF-8"}, "en"),
     ({"LANG": "C"}, "en"),
     ({}, "en"),
-    ({"MPING_LANG": "es", "LANG": "en_US.UTF-8"}, "es"),   # la env manda sobre el locale
+    ({"ECO_LANG": "es", "LANG": "en_US.UTF-8"}, "es"),   # la env manda sobre el locale
 ])
 def test_eleccion_de_idioma(monkeypatch, entorno, esperado):
-    for v in ("MPING_LANG", "LC_ALL", "LC_MESSAGES", "LANG"):
+    for v in ("ECO_LANG", "LC_ALL", "LC_MESSAGES", "LANG"):
         monkeypatch.delenv(v, raising=False)
     for k, v in entorno.items():
         monkeypatch.setenv(k, v)
@@ -74,13 +74,36 @@ def test_el_flag_manda_sobre_todo(monkeypatch):
 # ── flags bilingües ───────────────────────────────────────────────────────────
 @pytest.mark.parametrize("es,en", [
     ("--todos", "--all"), ("--barrido", "--sweep"), ("--flujo", "--stream"),
-    ("--nombres", "--names"), ("--relativo", "--relative"),
+    ("--dns", "--inverso"), ("--relativo", "--relative"),
     ("--lineas", "--lines"), ("--plano", "--plain"),
 ])
 def test_las_opciones_largas_son_gemelas(es, en):
     ap = m.construir_parser()
     a, b = ap.parse_args([es, "x"]), ap.parse_args([en, "x"])
     assert vars(a) == vars(b)
+
+
+def test_nombrar_toma_destino_y_apodo():
+    ap = m.construir_parser()
+    assert ap.parse_args(["--nombrar", ".65", "impresora"]).nombrar == [".65", "impresora"]
+    assert ap.parse_args(["--name", ".65", "printer"]).nombrar == [".65", "printer"]
+
+
+def test_nombrar_no_necesita_destinos():
+    """`eco --nombrar .65 x` no pinga nada, así que no debe exigir un destino."""
+    a = m.construir_parser().parse_args(["--nombrar", ".65", "impresora"])
+    assert a.destinos == [] and a.nombrar
+
+
+def test_un_apodo_con_espacios_va_entre_comillas():
+    a = m.construir_parser().parse_args(["--nombrar", ".65", "impresora de barra"])
+    assert a.nombrar[1] == "impresora de barra"
+
+
+def test_nombres_ya_no_existe_como_flag():
+    """--nombrar y --nombres juntos se confundían al leer; el DNS es --dns."""
+    with pytest.raises(SystemExit):
+        m.construir_parser().parse_args(["--nombres", "x"])
 
 
 def test_las_opciones_con_valor_son_gemelas():

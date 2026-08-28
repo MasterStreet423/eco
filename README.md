@@ -1,10 +1,13 @@
-# mping
+# eco
 
 Ping a lot of things at once and understand it at a glance.
 
 *[Léeme en español](README.es.md)*
 
-`mping` is the sibling of a plain `ping`, aimed at networks rather than at a
+The name is what it does: it sends an ICMP **echo** and listens for the echo
+back.
+
+`eco` is the sibling of a plain `ping`, aimed at networks rather than at a
 single host. Give it one address or a whole `/24` and it picks the right mode on
 its own — a live table that redraws in place, or a parallel sweep of the network.
 It reads MAC addresses out of the ARP table, and lets you give hosts names that
@@ -15,8 +18,8 @@ Single file, Python 3 standard library only, no dependencies.
 ## Install
 
 ```bash
-curl -o ~/.local/bin/mping https://raw.githubusercontent.com/MasterStreet423/mping/main/mping
-chmod +x ~/.local/bin/mping
+curl -o ~/.local/bin/eco https://raw.githubusercontent.com/MasterStreet423/eco/main/eco
+chmod +x ~/.local/bin/eco
 ```
 
 Requires Python 3.9+, `iproute2` (`ip`) and `iputils` (`ping`). Linux only for
@@ -40,10 +43,10 @@ leaves the table on screen.
 table of who answered, how fast, and with which MAC.
 
 ```bash
-mping 192.168.1.0/24        # the whole network
-mping 192.168.1.1-20        # a range
-mping --all 192.168.1.0/24  # include the ones that never answer
-mping --names 10.0.0.0/24   # plus reverse DNS
+eco 192.168.1.0/24        # the whole network
+eco 192.168.1.1-20        # a range
+eco --all 192.168.1.0/24  # include the ones that never answer
+eco --dns 10.0.0.0/24     # plus reverse DNS
 ```
 
 ## Naming hosts
@@ -51,23 +54,23 @@ mping --names 10.0.0.0/24   # plus reverse DNS
 A sweep numbers every row, so you can baptize one:
 
 ```bash
-mping app 5 printer-bar
+eco --name 5 printer-bar
 ```
 
 If you already know who you want to name, skip the sweep — give it the address
-directly and `mping` finds the MAC itself, pinging the host first if the ARP
+directly and `eco` finds the MAC itself, pinging the host first if the ARP
 table is cold. A leading dot fills in your own network:
 
 ```bash
-mping app .65 printer-bar          # -> 192.168.1.65
-mping app 192.168.1.65 printer-bar
-mping app tower home-server
+eco --name .65 printer-bar          # -> 192.168.1.65
+eco --name 192.168.1.65 printer-bar
+eco --name tower home-server
 ```
 
 Names are stored **by MAC**, so they survive a DHCP lease change. Hosts with no
 visible MAC (anything across a router) fall back to being stored by IP. The file
 is `~/.config/lan/conocidos.conf`, shared with the `lan` tool; override it with
-`MPING_CONF`.
+`ECO_CONF`.
 
 > A bare number is always a sweep row, never an address. For `.5` on your own
 > network, write `.5`.
@@ -78,8 +81,8 @@ Output follows your locale, and every long option has a twin in the other
 language, so both of these are the same command:
 
 ```bash
-mping --todos --nombres 192.168.1.0/24
-mping --all   --names   192.168.1.0/24
+eco --todos --barrido 192.168.1.0/24
+eco --all   --sweep   192.168.1.0/24
 ```
 
 | Spanish | English | |
@@ -91,13 +94,14 @@ mping --all   --names   192.168.1.0/24
 | `--barrido` | `--sweep`, `--scan` | force the table |
 | `--flujo` | `--stream`, `--live` | force the live table |
 | `--todos` | `--all` | include hosts that never answer |
-| `--nombres` | `--names`, `--dns` | reverse DNS |
+| `--inverso` | `--dns`, `--reverse` | reverse DNS |
+| `--nombrar` | `--name` | name a host |
 | `--relativo` | `--relative` | sparkline with relative scale |
 | `--lineas` | `--lines`, `--log` | vertical log, for pipes |
 | `--plano` | `--plain` | no colors, tab-separated |
 | `--idioma` | `--lang` | force `es` or `en` |
 
-Force the language with `--lang en` or `MPING_LANG=en`.
+Force the language with `--lang en` or `ECO_LANG=en`.
 
 ## Why the sparkline scale is absolute
 

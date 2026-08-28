@@ -1,5 +1,5 @@
 [project]
-name = "mping"
+name = "eco"
 version = "1.0.0"
 description = "Ping many hosts in parallel, with a live table, MACs and nicknames"
 requires-python = ">=3.9"

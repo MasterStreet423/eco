@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""mping: ping a lot of things at once and understand it at a glance."""
+"""eco: ping a lot of things at once and understand it at a glance."""
 
 import argparse, asyncio, bisect, ipaddress, json, os, re, shutil, signal, subprocess, sys, time
 
@@ -13,10 +13,10 @@ def _xdg(var, defecto):
     return base
 
 # Names live in the same file `lan` uses, so a nickname set here shows up there.
-# MPING_CONF (or the older LAN_CONF) overrides it.
-CONOCIDOS = (os.environ.get("MPING_CONF") or os.environ.get("LAN_CONF")
+# ECO_CONF (or the older LAN_CONF) overrides it.
+CONOCIDOS = (os.environ.get("ECO_CONF") or os.environ.get("LAN_CONF")
              or os.path.join(_xdg("XDG_CONFIG_HOME", "~/.config"), "lan", "conocidos.conf"))
-ESTADO    = os.path.join(_xdg("XDG_CACHE_HOME", "~/.cache"), "mping", "ultimo.json")
+ESTADO    = os.path.join(_xdg("XDG_CACHE_HOME", "~/.cache"), "eco", "ultimo.json")
 
 # ── i18n ──────────────────────────────────────────────────────────────────────
 # Two languages, one dict. `t()` is the only way strings reach the screen, so a
@@ -33,6 +33,7 @@ TEXTOS = {
  "h_flujo": "forzar flujo aunque sean hartos",
  "h_todos": "mostrar también los que no contestan",
  "h_nombres": "DNS inverso de los que contestan",
+ "h_nombrar": "ponerle nombre a un equipo: --nombrar <fila|IP|nombre> <apodo>",
  "h_relativo": "chispa con zoom al mín/máx de cada fila, en vez de escala absoluta",
  "h_lineas": "flujo como log vertical, una línea por paquete (para pipes)",
  "h_plano": "sin colores, salida tabulada",
@@ -62,13 +63,15 @@ TEXTOS = {
  "leyenda_mac": "  ~ = MAC aleatoria (cambia sola) · ",
  "leyenda_apodo": "ponle nombre a una fila con ",
  "leyenda_apodo2": " o directo con ",
+ "ej_nombrar_fila": "eco --nombrar <#> <nombre>",
+ "ej_nombrar_ip": "eco --nombrar <IP> <nombre>",
  "cortado": "\n  cortado",
  # apodar
- "uso_app": "  uso: mping app <fila-del-barrido | IP | nombre> <apodo>",
- "uso_app2": "       mping app 5 comandera-barra",
- "uso_app3": "       mping app .65 comandera-barra",
- "sin_barrido": "  no hay barrido previo — corre primero `mping 192.168.1.0/24`",
- "sin_barrido2": "  o apoda por IP directa: mping app .65 comandera-barra",
+ "uso_nombrar": "  uso: eco --nombrar <fila-del-barrido | IP | nombre> <apodo>",
+ "uso_nombrar2": "       eco --nombrar 5 impresora-barra",
+ "uso_nombrar3": "       eco --nombrar .65 impresora-barra",
+ "sin_barrido": "  no hay barrido previo — corre primero `eco 192.168.1.0/24`",
+ "sin_barrido2": "  o nombra por IP directa: eco --nombrar .65 impresora-barra",
  "no_existe_fila": "  el último barrido tenía {n} filas, no existe la {p}",
  "sin_ip_propia": "no le hallé IP a esta máquina, escribe la IP completa",
  "no_resuelve": "no pude resolver «{o}»",
@@ -77,16 +80,17 @@ TEXTOS = {
  "sin_arp3": "    de un router no hay MAC). Se guardará por IP.",
  "por_mac": "MAC",
  "por_ip": "IP (sin MAC: está fuera de tu LAN)",
- "apodado": "apodado con mping el",
+ "apodado": "nombrado con eco el",
  "cabecera_conf": "# Equipos conocidos de la red: clave | nombre | tipo | nota",
  "guardado": "    guardado en {f} · lo ve también `lan`",
  "ayuda": """
-mping: pingear muchas cosas a la vez y que se entienda de una mirada.
+eco: pingear muchas cosas a la vez y que se entienda de una mirada.
 
-Hermano de `lan`, pero al revés: `lan` te dice QUIÉN está en la red (por ARP,
-una foto), `mping` te dice CÓMO está el camino hacia uno o varios equipos (por
-ICMP, en vivo). Sirve para pillar el wifi que se cae, la impresora que se
-cuelga o el server que responde lento.
+El nombre es lo que hace: manda un ICMP echo y escucha el eco. Hermano de `lan`,
+pero al revés: `lan` te dice QUIÉN está en la red (por ARP, una foto), `eco` te
+dice CÓMO está el camino hacia uno o varios equipos (por ICMP, en vivo). Sirve
+para pillar el wifi que se cae, la impresora que se cuelga o el server que
+responde lento.
 
 Dos modos, elegidos solos según cuántos destinos le des:
 
@@ -98,48 +102,48 @@ Dos modos, elegidos solos según cuántos destinos le des:
                             y arma la tabla de quién contesta y con cuánto ms.
 
 Uso:
-  mping 192.168.1.1 8.8.8.8            flujo, ping continuo a dos
-  mping 192.168.1.{1,2,3,4}            idem (bash expande las llaves solo)
-  mping '192.168.1.{1,2,3,4}'          igual, comillado lo expando yo
-  mping 192.168.1.0/24                 barrido de la red completa
-  mping 192.168.1.1-20                 barrido de un rango
-  mping -c 5 192.168.1.1               solo 5 paquetes y para
-  mping -i 0.3 torre                   más rápido (bajo 0.2 pide root)
-  mping --barrido 192.168.1.1 torre    fuerza tabla en vez de flujo
-  mping --todos 192.168.1.0/24         la tabla incluye los que no contestan
-  mping --nombres 192.168.1.0/24       además, DNS inverso de los vivos
+  eco 192.168.1.1 8.8.8.8            flujo, ping continuo a dos
+  eco 192.168.1.{1,2,3,4}            idem (bash expande las llaves solo)
+  eco '192.168.1.{1,2,3,4}'          igual, comillado lo expando yo
+  eco 192.168.1.0/24                 barrido de la red completa
+  eco 192.168.1.1-20                 barrido de un rango
+  eco -c 5 192.168.1.1               solo 5 paquetes y para
+  eco -i 0.3 torre                   más rápido (bajo 0.2 pide root)
+  eco --barrido 192.168.1.1 torre    fuerza tabla en vez de flujo
+  eco --todos 192.168.1.0/24         la tabla incluye los que no contestan
+  eco --dns 192.168.1.0/24           además, DNS inverso de los vivos
 
 Todas las opciones largas tienen su gemela en inglés: --todos = --all,
---barrido = --sweep, --nombres = --names, y así. El idioma de la salida sale
-de tu locale; se fuerza con --idioma es|en o con MPING_LANG.
+--barrido = --sweep, --nombrar = --name, y así. El idioma de la salida sale de
+tu locale; se fuerza con --idioma es|en o con ECO_LANG.
 
 En el barrido cada fila va numerada y trae su MAC (sale de la tabla ARP, que
 los propios pings dejan calentita; al otro lado de un router no hay MAC). Para
 bautizar un equipo:
 
-  mping app 5 impresora-barra          la fila 5 del último barrido pasa a
-                                       llamarse así, y se reconoce sola en los
-                                       barridos siguientes
+  eco --nombrar 5 impresora-barra    la fila 5 del último barrido pasa a
+                                     llamarse así, y se reconoce sola en los
+                                     barridos siguientes
 
 Si ya sabes a quién quieres bautizar no hace falta barrer antes: dale la IP (o
 un nombre) en vez del número de fila y él busca la MAC solo, pingueándola si la
 tabla ARP está fría. Un punto adelante completa con tu propia red:
 
-  mping app .65 impresora-barra        192.168.1.65 -> impresora-barra
-  mping app 192.168.1.65 impresora-barra
-  mping app torre servidor-casa
+  eco --nombrar .65 impresora-barra  192.168.1.65 -> impresora-barra
+  eco --nombrar 192.168.1.65 impresora-barra
+  eco --nombrar torre servidor-casa
 
 Ojo: un número pelado siempre es fila del barrido, nunca IP — para la .5 de tu
-red escribe `.5`.
+red escribe `.5`. Si el nombre lleva espacios, va entre comillas.
 
 El apodo se guarda por MAC en ~/.config/lan/conocidos.conf — el MISMO archivo
 de `lan`, así que el nombre vale en las dos herramientas. Se guarda por IP solo
 si el equipo no tiene MAC visible. Todo vive en disco (el apodo ahí, el orden
-del último barrido en ~/.cache/mping/), así que aguanta reinicios.
+del último barrido en ~/.cache/eco/), así que aguanta reinicios.
 
-  mping -l torre                       flujo como log, una línea por paquete
-  mping -r torre                       chispa con zoom (escala relativa)
-  mping --plano ...                    sin colores ni marcos, para grep
+  eco -l torre                       flujo como log, una línea por paquete
+  eco -r torre                       chispa con zoom (escala relativa)
+  eco --plano ...                    sin colores ni marcos, para grep
 
 Ojo: quien no contesta ICMP no está necesariamente muerto — Windows con
 firewall, cámaras y celulares en ahorro lo filtran. Para inventario de red
@@ -156,6 +160,7 @@ usa `lan` (ARP), que ahí nadie se esconde.
  "h_flujo": "force stream mode even for many hosts",
  "h_todos": "also show the hosts that never answer",
  "h_nombres": "reverse DNS for the hosts that answer",
+ "h_nombrar": "name a host: --name <row|IP|hostname> <nickname>",
  "h_relativo": "sparkline zoomed to each row's min/max instead of an absolute scale",
  "h_lineas": "stream as a vertical log, one line per packet (for pipes)",
  "h_plano": "no colors, tab-separated output",
@@ -181,12 +186,14 @@ usa `lan` (ARP), que ahí nadie se esconde.
  "leyenda_mac": "  ~ = randomized MAC (it changes on its own) · ",
  "leyenda_apodo": "name a row with ",
  "leyenda_apodo2": " or directly with ",
+ "ej_nombrar_fila": "eco --name <#> <name>",
+ "ej_nombrar_ip": "eco --name <IP> <name>",
  "cortado": "\n  stopped",
- "uso_app": "  usage: mping app <sweep-row | IP | hostname> <nickname>",
- "uso_app2": "         mping app 5 printer-bar",
- "uso_app3": "         mping app .65 printer-bar",
- "sin_barrido": "  no previous sweep — run `mping 192.168.1.0/24` first",
- "sin_barrido2": "  or name it by IP directly: mping app .65 printer-bar",
+ "uso_nombrar": "  usage: eco --name <sweep-row | IP | hostname> <nickname>",
+ "uso_nombrar2": "         eco --name 5 printer-bar",
+ "uso_nombrar3": "         eco --name .65 printer-bar",
+ "sin_barrido": "  no previous sweep — run `eco 192.168.1.0/24` first",
+ "sin_barrido2": "  or name it by IP directly: eco --name .65 printer-bar",
  "no_existe_fila": "  the last sweep had {n} rows, there is no row {p}",
  "sin_ip_propia": "could not find this machine's IP, write the full address",
  "no_resuelve": "could not resolve «{o}»",
@@ -195,16 +202,17 @@ usa `lan` (ARP), que ahí nadie se esconde.
  "sin_arp3": "    across a router). It will be saved by IP.",
  "por_mac": "MAC",
  "por_ip": "IP (no MAC: it is outside your LAN)",
- "apodado": "named with mping on",
+ "apodado": "named with eco on",
  "cabecera_conf": "# Known hosts on the network: key | name | type | note",
  "guardado": "    saved to {f} · `lan` reads it too",
  "ayuda": """
-mping: ping a lot of things at once and understand it at a glance.
+eco: ping a lot of things at once and understand it at a glance.
 
+The name is what it does: it sends an ICMP echo and listens for the echo back.
 The sibling of `lan`, the other way around: `lan` tells you WHO is on the
-network (via ARP, a snapshot), `mping` tells you HOW the path to one or more
-hosts is doing (via ICMP, live). Good for catching the wifi that drops, the
-printer that hangs or the server that answers slowly.
+network (via ARP, a snapshot), `eco` tells you HOW the path to one or more hosts
+is doing (via ICMP, live). Good for catching the wifi that drops, the printer
+that hangs or the server that answers slowly.
 
 Two modes, picked automatically from how many hosts you give it:
 
@@ -216,49 +224,49 @@ Two modes, picked automatically from how many hosts you give it:
                         the table of who answers and how fast.
 
 Usage:
-  mping 192.168.1.1 8.8.8.8          stream, continuous ping to two
-  mping 192.168.1.{1,2,3,4}          same (bash expands the braces itself)
-  mping '192.168.1.{1,2,3,4}'        same, quoted I expand them myself
-  mping 192.168.1.0/24               sweep the whole network
-  mping 192.168.1.1-20               sweep a range
-  mping -c 5 192.168.1.1             only 5 packets, then stop
-  mping -i 0.3 tower                 faster (below 0.2 needs root)
-  mping --sweep 192.168.1.1 tower    force the table instead of the stream
-  mping --all 192.168.1.0/24         the table includes hosts that never answer
-  mping --names 192.168.1.0/24       plus reverse DNS of the ones that are up
+  eco 192.168.1.1 8.8.8.8          stream, continuous ping to two
+  eco 192.168.1.{1,2,3,4}          same (bash expands the braces itself)
+  eco '192.168.1.{1,2,3,4}'        same, quoted I expand them myself
+  eco 192.168.1.0/24               sweep the whole network
+  eco 192.168.1.1-20               sweep a range
+  eco -c 5 192.168.1.1             only 5 packets, then stop
+  eco -i 0.3 tower                 faster (below 0.2 needs root)
+  eco --sweep 192.168.1.1 tower    force the table instead of the stream
+  eco --all 192.168.1.0/24         the table includes hosts that never answer
+  eco --dns 192.168.1.0/24         plus reverse DNS of the ones that are up
 
 Every long option has a Spanish twin: --all = --todos, --sweep = --barrido,
---names = --nombres, and so on. The output language follows your locale; force
-it with --lang es|en or with MPING_LANG.
+--name = --nombrar, and so on. The output language follows your locale; force
+it with --lang es|en or with ECO_LANG.
 
 In a sweep every row is numbered and carries its MAC (it comes from the ARP
 table, which the pings themselves warmed up; across a router there is no MAC).
 To name a host:
 
-  mping app 5 printer-bar            row 5 of the last sweep is now called
-                                     that, and recognizes itself in every
-                                     sweep from now on
+  eco --name 5 printer-bar         row 5 of the last sweep is now called that,
+                                   and recognizes itself in every sweep from
+                                   now on
 
 If you already know who you want to name there is no need to sweep first: give
 it the IP (or a hostname) instead of the row number and it finds the MAC on its
 own, pinging it if the ARP table is cold. A leading dot fills in your own
 network:
 
-  mping app .65 printer-bar          192.168.1.65 -> printer-bar
-  mping app 192.168.1.65 printer-bar
-  mping app tower home-server
+  eco --name .65 printer-bar       192.168.1.65 -> printer-bar
+  eco --name 192.168.1.65 printer-bar
+  eco --name tower home-server
 
 Careful: a bare number is always a sweep row, never an IP — for .5 on your own
-network write `.5`.
+network write `.5`. Quote the nickname if it has spaces in it.
 
 The nickname is stored by MAC in ~/.config/lan/conocidos.conf — the SAME file
 `lan` uses, so the name works in both tools. It falls back to storing by IP
 only when the host has no visible MAC. Everything lives on disk (the nickname
-there, the last sweep's order in ~/.cache/mping/), so it survives reboots.
+there, the last sweep's order in ~/.cache/eco/), so it survives reboots.
 
-  mping -l tower                     stream as a log, one line per packet
-  mping -r tower                     sparkline with zoom (relative scale)
-  mping --plain ...                  no colors or frames, for grep
+  eco -l tower                     stream as a log, one line per packet
+  eco -r tower                     sparkline with zoom (relative scale)
+  eco --plain ...                  no colors or frames, for grep
 
 Careful: whoever does not answer ICMP is not necessarily dead — Windows with a
 firewall, cameras and phones on battery saver filter it out. For a network
@@ -270,9 +278,9 @@ inventory use `lan` (ARP), where nobody can hide.
 IDIOMA = "es"
 
 def elegir_idioma(forzado=None):
-    """--idioma > MPING_LANG > locale > inglés. El locale se mira crudo y no con
+    """--idioma > ECO_LANG > locale > inglés. El locale se mira crudo y no con
     el módulo `locale`, que en un sistema sin configurar devuelve 'C' y nada más."""
-    for cand in (forzado, os.environ.get("MPING_LANG"),
+    for cand in (forzado, os.environ.get("ECO_LANG"),
                  os.environ.get("LC_ALL"), os.environ.get("LC_MESSAGES"),
                  os.environ.get("LANG")):
         if not cand:
@@ -430,8 +438,8 @@ def mac_de(ip):
     return macs_arp().get(ip)
 
 def apodar(objetivo, nombre):
-    """`mping app 5 nombre` (fila del último barrido) o `mping app .65 nombre`
-    (IP o nombre directo, sin barrer antes)."""
+    """`eco --nombrar 5 nombre` (fila del último barrido) o `eco --nombrar .65
+    nombre` (IP o nombre directo, sin barrer antes)."""
     if objetivo.isdigit():
         try:
             est = json.load(open(ESTADO))
@@ -669,7 +677,7 @@ async def flujo(hosts, intervalo, cuenta, espera, tabla):
 
     tareas = [asyncio.ensure_future(uno(h)) for h in hosts]
     # el pintor va aparte del gather: es un bucle infinito, si entrara ahí
-    # `mping -c 5` no terminaría nunca aunque los pings ya hayan acabado
+    # `eco -c 5` no terminaría nunca aunque los pings ya hayan acabado
     lapiz = asyncio.ensure_future(pintar()) if tabla else None
     try:
         await asyncio.gather(*tareas)
@@ -778,7 +786,7 @@ async def barrido(nombres, cuenta, espera, paralelo, nombres_dns, todos):
         except ValueError: return (1, n)
     filas = [n for n in sorted(nombres, key=clave) if res[n]["rec"] or todos]
 
-    # el orden de la tabla es lo que después indexa `mping app N nombre`,
+    # el orden de la tabla es lo que después indexa `eco --nombrar N nombre`,
     # y vive en disco justamente para que sobreviva a un reinicio
     try:
         os.makedirs(os.path.dirname(ESTADO), exist_ok=True)
@@ -843,14 +851,12 @@ async def barrido(nombres, cuenta, espera, paralelo, nombres_dns, todos):
           dim(t("pie_barrido", s=time.time()-t0, c=cuenta)))
     if hay_mac:
         print(dim(t("leyenda_mac")) + dim(t("leyenda_apodo")) +
-              bold("mping app <#> <nombre>") + dim(t("leyenda_apodo2")) +
-              bold("mping app <IP> <nombre>"))
+              bold(t("ej_nombrar_fila")) + dim(t("leyenda_apodo2")) +
+              bold(t("ej_nombrar_ip")))
 
 # ── main ──────────────────────────────────────────────────────────────────────
-SUBCOMANDOS = ("app", "apodo", "apodar", "nombre", "name", "nick", "label")
-
 def construir_parser():
-    ap = argparse.ArgumentParser(prog="mping", add_help=False, description=t("desc"))
+    ap = argparse.ArgumentParser(prog="eco", add_help=False, description=t("desc"))
     ap.add_argument("destinos", nargs="*")
     ap.add_argument("-c", "--cuenta", "--count", type=int, default=None, help=t("h_cuenta"))
     ap.add_argument("-i", "--intervalo", "--interval", type=float, default=1.0, help=t("h_intervalo"))
@@ -859,7 +865,10 @@ def construir_parser():
     ap.add_argument("-b", "--barrido", "--sweep", "--scan", action="store_true", help=t("h_barrido"))
     ap.add_argument("-f", "--flujo", "--stream", "--live", action="store_true", help=t("h_flujo"))
     ap.add_argument("-t", "--todos", "--all", action="store_true", help=t("h_todos"))
-    ap.add_argument("-n", "--nombres", "--names", "--dns", action="store_true", help=t("h_nombres"))
+    ap.add_argument("-n", "--dns", "--inverso", "--reverse", dest="nombres",
+                    action="store_true", help=t("h_nombres"))
+    ap.add_argument("--nombrar", "--name", dest="nombrar", nargs=2,
+                    metavar=("DESTINO", "NOMBRE"), help=t("h_nombrar"))
     ap.add_argument("-r", "--relativo", "--relative", action="store_true", help=t("h_relativo"))
     ap.add_argument("-l", "--lineas", "--lines", "--log", action="store_true", help=t("h_lineas"))
     ap.add_argument("--plano", "--plain", action="store_true", help=t("h_plano"))
@@ -881,13 +890,11 @@ def main():
         elif a.startswith(("--idioma=", "--lang=")):
             IDIOMA = elegir_idioma(a.split("=", 1)[1])
 
-    if len(sys.argv) > 1 and sys.argv[1] in SUBCOMANDOS:
-        if len(sys.argv) < 4:
-            print(rojo(t("uso_app"))); print(dim(t("uso_app2"))); print(dim(t("uso_app3")))
-            sys.exit(1)
-        sys.exit(apodar(sys.argv[2], " ".join(sys.argv[3:])))
-
     a = construir_parser().parse_args()
+
+    # --nombrar no pinga nada: hace su trabajo y se va, sin exigir destinos
+    if a.nombrar:
+        sys.exit(apodar(a.nombrar[0], a.nombrar[1]))
 
     if a.ayuda or not a.destinos:
         print(t("ayuda"), end="")
