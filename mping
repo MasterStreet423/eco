@@ -1,0 +1,929 @@
+#!/usr/bin/env python3
+"""mping: ping a lot of things at once and understand it at a glance."""
+
+import argparse, asyncio, bisect, ipaddress, json, os, re, shutil, signal, subprocess, sys, time
+
+# ping comes out translated when the system locale is not English ("tiempo=" for
+# "time="), so every subprocess is forced to the C locale: we parse its output,
+# we don't read it.
+ENV_C = {**os.environ, "LC_ALL": "C", "LANG": "C"}
+
+def _xdg(var, defecto):
+    base = os.environ.get(var) or os.path.expanduser(defecto)
+    return base
+
+# Names live in the same file `lan` uses, so a nickname set here shows up there.
+# MPING_CONF (or the older LAN_CONF) overrides it.
+CONOCIDOS = (os.environ.get("MPING_CONF") or os.environ.get("LAN_CONF")
+             or os.path.join(_xdg("XDG_CONFIG_HOME", "~/.config"), "lan", "conocidos.conf"))
+ESTADO    = os.path.join(_xdg("XDG_CACHE_HOME", "~/.cache"), "mping", "ultimo.json")
+
+# ── i18n ──────────────────────────────────────────────────────────────────────
+# Two languages, one dict. `t()` is the only way strings reach the screen, so a
+# missing key is a KeyError in the tests and never a half-translated table.
+
+TEXTOS = {
+"es": {
+ "desc": "ping en paralelo a varios destinos, bonito y legible",
+ "h_cuenta": "cuántos paquetes por destino",
+ "h_intervalo": "segundos entre paquetes (flujo)",
+ "h_espera": "timeout por paquete, en segundos",
+ "h_paralelo": "pings simultáneos en el barrido",
+ "h_barrido": "forzar tabla aunque sean pocos",
+ "h_flujo": "forzar flujo aunque sean hartos",
+ "h_todos": "mostrar también los que no contestan",
+ "h_nombres": "DNS inverso de los que contestan",
+ "h_relativo": "chispa con zoom al mín/máx de cada fila, en vez de escala absoluta",
+ "h_lineas": "flujo como log vertical, una línea por paquete (para pipes)",
+ "h_plano": "sin colores, salida tabulada",
+ "h_idioma": "idioma de la salida: es, en (por defecto, el del sistema)",
+ # cabeceras
+ "destino": "destino", "quien": "quién", "seq": "  seq", "ultimo": "   último",
+ "paq": "   paq", "perd": "perd", "minmax": "min/prom/máx", "historial": "historial",
+ "latencia": "latencia", "paq_corto": "paq", "mac": "mac", "nombre": "nombre",
+ # flujo
+ "perdido": "  perdido", "nada": "        —",
+ "esta_maquina": "esta máquina",
+ "tardio": "(tardío)", "sin_respuesta": "sin respuesta",
+ "pie_flujo": "{s:5.0f}s · cada {i}s · {esc} · Ctrl-C corta",
+ "cabecera_log": "→ ping a {n} destino(s) cada {i}s · Ctrl-C para el resumen\n",
+ "resumen": "── resumen ",
+ "sin_paquetes": "sin paquetes",
+ "perdida": "{p:.0f}% perdida",
+ "paq_label": "paq", "jitter": "jitter", "minmax_label": "min/prom/máx",
+ # escala
+ "esc_rel": "escala relativa: se estira al mín/máx de cada fila (zoom, no comparable)",
+ "esc_abs": "escala ▁1 ▂3 ▃9 ▄26 ▅70 ▆190 ▇500 █+ ms · igual para todas las filas",
+ # barrido
+ "vivos": "vivos",
+ "nadie": "  nadie contestó de {n} destinos ",
+ "pie_barrido": "· {s:.1f}s · {c} paq c/u",
+ "resumen_barrido": "  {v} vivos de {n}  ",
+ "leyenda_mac": "  ~ = MAC aleatoria (cambia sola) · ",
+ "leyenda_apodo": "ponle nombre a una fila con ",
+ "leyenda_apodo2": " o directo con ",
+ "cortado": "\n  cortado",
+ # apodar
+ "uso_app": "  uso: mping app <fila-del-barrido | IP | nombre> <apodo>",
+ "uso_app2": "       mping app 5 comandera-barra",
+ "uso_app3": "       mping app .65 comandera-barra",
+ "sin_barrido": "  no hay barrido previo — corre primero `mping 192.168.1.0/24`",
+ "sin_barrido2": "  o apoda por IP directa: mping app .65 comandera-barra",
+ "no_existe_fila": "  el último barrido tenía {n} filas, no existe la {p}",
+ "sin_ip_propia": "no le hallé IP a esta máquina, escribe la IP completa",
+ "no_resuelve": "no pude resolver «{o}»",
+ "sin_arp": "  {ip} no dejó rastro en la tabla ARP",
+ "sin_arp2": "    o está apagado, o está fuera de tu LAN (al otro lado",
+ "sin_arp3": "    de un router no hay MAC). Se guardará por IP.",
+ "por_mac": "MAC",
+ "por_ip": "IP (sin MAC: está fuera de tu LAN)",
+ "apodado": "apodado con mping el",
+ "cabecera_conf": "# Equipos conocidos de la red: clave | nombre | tipo | nota",
+ "guardado": "    guardado en {f} · lo ve también `lan`",
+ "ayuda": """
+mping: pingear muchas cosas a la vez y que se entienda de una mirada.
+
+Hermano de `lan`, pero al revés: `lan` te dice QUIÉN está en la red (por ARP,
+una foto), `mping` te dice CÓMO está el camino hacia uno o varios equipos (por
+ICMP, en vivo). Sirve para pillar el wifi que se cae, la impresora que se
+cuelga o el server que responde lento.
+
+Dos modos, elegidos solos según cuántos destinos le des:
+
+  flujo   (<= 12 destinos)  tabla viva: una fila por destino que se redibuja
+                            sola con el último ms, la pérdida, min/prom/máx y
+                            el historial. Ctrl-C corta y deja la tabla quieta.
+                            Con -l sale como log vertical (para pipes).
+  barrido (> 12 destinos)   manda unos pocos paquetes a cada uno en paralelo
+                            y arma la tabla de quién contesta y con cuánto ms.
+
+Uso:
+  mping 192.168.1.1 8.8.8.8            flujo, ping continuo a dos
+  mping 192.168.1.{1,2,3,4}            idem (bash expande las llaves solo)
+  mping '192.168.1.{1,2,3,4}'          igual, comillado lo expando yo
+  mping 192.168.1.0/24                 barrido de la red completa
+  mping 192.168.1.1-20                 barrido de un rango
+  mping -c 5 192.168.1.1               solo 5 paquetes y para
+  mping -i 0.3 torre                   más rápido (bajo 0.2 pide root)
+  mping --barrido 192.168.1.1 torre    fuerza tabla en vez de flujo
+  mping --todos 192.168.1.0/24         la tabla incluye los que no contestan
+  mping --nombres 192.168.1.0/24       además, DNS inverso de los vivos
+
+Todas las opciones largas tienen su gemela en inglés: --todos = --all,
+--barrido = --sweep, --nombres = --names, y así. El idioma de la salida sale
+de tu locale; se fuerza con --idioma es|en o con MPING_LANG.
+
+En el barrido cada fila va numerada y trae su MAC (sale de la tabla ARP, que
+los propios pings dejan calentita; al otro lado de un router no hay MAC). Para
+bautizar un equipo:
+
+  mping app 5 impresora-barra          la fila 5 del último barrido pasa a
+                                       llamarse así, y se reconoce sola en los
+                                       barridos siguientes
+
+Si ya sabes a quién quieres bautizar no hace falta barrer antes: dale la IP (o
+un nombre) en vez del número de fila y él busca la MAC solo, pingueándola si la
+tabla ARP está fría. Un punto adelante completa con tu propia red:
+
+  mping app .65 impresora-barra        192.168.1.65 -> impresora-barra
+  mping app 192.168.1.65 impresora-barra
+  mping app torre servidor-casa
+
+Ojo: un número pelado siempre es fila del barrido, nunca IP — para la .5 de tu
+red escribe `.5`.
+
+El apodo se guarda por MAC en ~/.config/lan/conocidos.conf — el MISMO archivo
+de `lan`, así que el nombre vale en las dos herramientas. Se guarda por IP solo
+si el equipo no tiene MAC visible. Todo vive en disco (el apodo ahí, el orden
+del último barrido en ~/.cache/mping/), así que aguanta reinicios.
+
+  mping -l torre                       flujo como log, una línea por paquete
+  mping -r torre                       chispa con zoom (escala relativa)
+  mping --plano ...                    sin colores ni marcos, para grep
+
+Ojo: quien no contesta ICMP no está necesariamente muerto — Windows con
+firewall, cámaras y celulares en ahorro lo filtran. Para inventario de red
+usa `lan` (ARP), que ahí nadie se esconde.
+""",
+},
+"en": {
+ "desc": "ping many hosts in parallel, pretty and readable",
+ "h_cuenta": "how many packets per host",
+ "h_intervalo": "seconds between packets (stream mode)",
+ "h_espera": "per-packet timeout, in seconds",
+ "h_paralelo": "simultaneous pings during a sweep",
+ "h_barrido": "force the table even for a few hosts",
+ "h_flujo": "force stream mode even for many hosts",
+ "h_todos": "also show the hosts that never answer",
+ "h_nombres": "reverse DNS for the hosts that answer",
+ "h_relativo": "sparkline zoomed to each row's min/max instead of an absolute scale",
+ "h_lineas": "stream as a vertical log, one line per packet (for pipes)",
+ "h_plano": "no colors, tab-separated output",
+ "h_idioma": "output language: es, en (defaults to your locale)",
+ "destino": "host", "quien": "who", "seq": "  seq", "ultimo": "     last",
+ "paq": "   pkt", "perd": "loss", "minmax": "min/avg/max", "historial": "history",
+ "latencia": "latency", "paq_corto": "pkt", "mac": "mac", "nombre": "name",
+ "perdido": "     lost", "nada": "        —",
+ "esta_maquina": "this machine",
+ "tardio": "(late)", "sin_respuesta": "no answer",
+ "pie_flujo": "{s:5.0f}s · every {i}s · {esc} · Ctrl-C stops",
+ "cabecera_log": "→ pinging {n} host(s) every {i}s · Ctrl-C for the summary\n",
+ "resumen": "── summary ",
+ "sin_paquetes": "no packets",
+ "perdida": "{p:.0f}% loss",
+ "paq_label": "pkt", "jitter": "jitter", "minmax_label": "min/avg/max",
+ "esc_rel": "relative scale: stretched to each row's min/max (zoom, not comparable)",
+ "esc_abs": "scale ▁1 ▂3 ▃9 ▄26 ▅70 ▆190 ▇500 █+ ms · the same for every row",
+ "vivos": "up",
+ "nadie": "  nobody answered out of {n} hosts ",
+ "pie_barrido": "· {s:.1f}s · {c} pkt each",
+ "resumen_barrido": "  {v} up out of {n}  ",
+ "leyenda_mac": "  ~ = randomized MAC (it changes on its own) · ",
+ "leyenda_apodo": "name a row with ",
+ "leyenda_apodo2": " or directly with ",
+ "cortado": "\n  stopped",
+ "uso_app": "  usage: mping app <sweep-row | IP | hostname> <nickname>",
+ "uso_app2": "         mping app 5 printer-bar",
+ "uso_app3": "         mping app .65 printer-bar",
+ "sin_barrido": "  no previous sweep — run `mping 192.168.1.0/24` first",
+ "sin_barrido2": "  or name it by IP directly: mping app .65 printer-bar",
+ "no_existe_fila": "  the last sweep had {n} rows, there is no row {p}",
+ "sin_ip_propia": "could not find this machine's IP, write the full address",
+ "no_resuelve": "could not resolve «{o}»",
+ "sin_arp": "  {ip} left no trace in the ARP table",
+ "sin_arp2": "    either it is off, or it is outside your LAN (there is no MAC",
+ "sin_arp3": "    across a router). It will be saved by IP.",
+ "por_mac": "MAC",
+ "por_ip": "IP (no MAC: it is outside your LAN)",
+ "apodado": "named with mping on",
+ "cabecera_conf": "# Known hosts on the network: key | name | type | note",
+ "guardado": "    saved to {f} · `lan` reads it too",
+ "ayuda": """
+mping: ping a lot of things at once and understand it at a glance.
+
+The sibling of `lan`, the other way around: `lan` tells you WHO is on the
+network (via ARP, a snapshot), `mping` tells you HOW the path to one or more
+hosts is doing (via ICMP, live). Good for catching the wifi that drops, the
+printer that hangs or the server that answers slowly.
+
+Two modes, picked automatically from how many hosts you give it:
+
+  stream (<= 12 hosts)  live table: one row per host, redrawn in place with the
+                        last ms, the loss, min/avg/max and the history. Ctrl-C
+                        stops and leaves the table on screen. With -l it comes
+                        out as a vertical log (for pipes).
+  sweep  (> 12 hosts)   sends a few packets to each one in parallel and builds
+                        the table of who answers and how fast.
+
+Usage:
+  mping 192.168.1.1 8.8.8.8          stream, continuous ping to two
+  mping 192.168.1.{1,2,3,4}          same (bash expands the braces itself)
+  mping '192.168.1.{1,2,3,4}'        same, quoted I expand them myself
+  mping 192.168.1.0/24               sweep the whole network
+  mping 192.168.1.1-20               sweep a range
+  mping -c 5 192.168.1.1             only 5 packets, then stop
+  mping -i 0.3 tower                 faster (below 0.2 needs root)
+  mping --sweep 192.168.1.1 tower    force the table instead of the stream
+  mping --all 192.168.1.0/24         the table includes hosts that never answer
+  mping --names 192.168.1.0/24       plus reverse DNS of the ones that are up
+
+Every long option has a Spanish twin: --all = --todos, --sweep = --barrido,
+--names = --nombres, and so on. The output language follows your locale; force
+it with --lang es|en or with MPING_LANG.
+
+In a sweep every row is numbered and carries its MAC (it comes from the ARP
+table, which the pings themselves warmed up; across a router there is no MAC).
+To name a host:
+
+  mping app 5 printer-bar            row 5 of the last sweep is now called
+                                     that, and recognizes itself in every
+                                     sweep from now on
+
+If you already know who you want to name there is no need to sweep first: give
+it the IP (or a hostname) instead of the row number and it finds the MAC on its
+own, pinging it if the ARP table is cold. A leading dot fills in your own
+network:
+
+  mping app .65 printer-bar          192.168.1.65 -> printer-bar
+  mping app 192.168.1.65 printer-bar
+  mping app tower home-server
+
+Careful: a bare number is always a sweep row, never an IP — for .5 on your own
+network write `.5`.
+
+The nickname is stored by MAC in ~/.config/lan/conocidos.conf — the SAME file
+`lan` uses, so the name works in both tools. It falls back to storing by IP
+only when the host has no visible MAC. Everything lives on disk (the nickname
+there, the last sweep's order in ~/.cache/mping/), so it survives reboots.
+
+  mping -l tower                     stream as a log, one line per packet
+  mping -r tower                     sparkline with zoom (relative scale)
+  mping --plain ...                  no colors or frames, for grep
+
+Careful: whoever does not answer ICMP is not necessarily dead — Windows with a
+firewall, cameras and phones on battery saver filter it out. For a network
+inventory use `lan` (ARP), where nobody can hide.
+""",
+},
+}
+
+IDIOMA = "es"
+
+def elegir_idioma(forzado=None):
+    """--idioma > MPING_LANG > locale > inglés. El locale se mira crudo y no con
+    el módulo `locale`, que en un sistema sin configurar devuelve 'C' y nada más."""
+    for cand in (forzado, os.environ.get("MPING_LANG"),
+                 os.environ.get("LC_ALL"), os.environ.get("LC_MESSAGES"),
+                 os.environ.get("LANG")):
+        if not cand:
+            continue
+        cand = cand.lower()
+        if cand.startswith("es"):
+            return "es"
+        if cand.startswith("en"):
+            return "en"
+        if forzado and cand == forzado.lower():
+            return "en"      # idioma pedido pero desconocido: no adivinar
+    return "en"
+
+def t(clave, **kw):
+    s = TEXTOS[IDIOMA][clave]
+    return s.format(**kw) if kw else s
+
+# ── colores ───────────────────────────────────────────────────────────────────
+PLANO = False
+def c(txt, code):
+    return txt if PLANO else f"\033[{code}m{txt}\033[0m"
+def dim(t_):   return c(t_, "2")
+def bold(t_):  return c(t_, "1")
+def rojo(t_):  return c(t_, "31")
+def verde(t_): return c(t_, "32")
+def ambar(t_): return c(t_, "33")
+def cian(t_):  return c(t_, "36")
+
+# paleta para distinguir destinos en el modo flujo
+PALETA = ["38;5;81", "38;5;213", "38;5;150", "38;5;222", "38;5;117",
+          "38;5;180", "38;5;158", "38;5;218", "38;5;110", "38;5;186",
+          "38;5;175", "38;5;114"]
+
+def color_ms(ms):
+    """Verde rápido, ámbar tolerable, rojo lento. El umbral es LAN-céntrico."""
+    if ms < 20:   return verde(f"{ms:6.1f} ms")
+    if ms < 80:   return ambar(f"{ms:6.1f} ms")
+    return rojo(f"{ms:6.1f} ms")
+
+BLOQUES = "▁▂▃▄▅▆▇█"
+# Cortes en ms para la escala ABSOLUTA (logarítmica, ~×2.7 por bloque: la
+# latencia se mueve en órdenes de magnitud, no en pasos iguales). Es absoluta a
+# propósito: escalar entre el mín y el máx de la ventana convierte un 0.4→0.5 ms
+# en un "pico" enorme que no significa nada, y encima hace incomparables dos
+# filas. Con esto, ▁ es siempre ~1 ms y █ es siempre un desastre.
+ESCALA = [1.3, 3.6, 9.7, 26, 70, 190, 500]
+RELATIVO = False        # -r vuelve al zoom automático de la ventana
+
+def chispa(muestras, ancho=24):
+    """Mini-gráfico de las últimas latencias; el paquete perdido va como ✗."""
+    m = muestras[-ancho:]
+    vivos = [x for x in m if x is not None]
+    if not vivos: return rojo("✗" * len(m))
+    if RELATIVO:
+        lo, hi = min(vivos), max(vivos)
+        span = (hi - lo) or 1.0
+        nivel = lambda x: int((x - lo) / span * (len(BLOQUES) - 1))
+    else:
+        nivel = lambda x: bisect.bisect_left(ESCALA, x)
+    return "".join(rojo("✗") if x is None else BLOQUES[nivel(x)] for x in m)
+
+def leyenda_escala():
+    return t("esc_rel") if RELATIVO else t("esc_abs")
+
+# ── identidad de cada IP ─────────────────────────────────────────────────────
+def leer_conocidos():
+    """clave (MAC o IP) -> nombre, del conocidos.conf que también usa `lan`."""
+    d = {}
+    try:
+        with open(CONOCIDOS) as f:
+            for l in f:
+                l = l.strip()
+                if not l or l.startswith("#"): continue
+                p = [x.strip() for x in l.split("|")]
+                if len(p) >= 2 and p[0] and p[1]: d[p[0].upper()] = p[1]
+    except FileNotFoundError: pass
+    return d
+
+def macs_arp():
+    """IP -> MAC leyendo la tabla ARP, que los pings recién mandados calentaron.
+    Solo existe para la LAN propia: al otro lado de un router no hay MAC."""
+    out = {}
+    try:
+        salida = subprocess.run(["ip", "-4", "neigh", "show"], env=ENV_C,
+                                capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return out
+    for l in salida.splitlines():
+        p = l.split()
+        if "lladdr" in p and "FAILED" not in l:
+            out[p[0]] = p[p.index("lladdr") + 1].upper()
+    return out
+
+def ips_propias():
+    """Las IP de esta máquina: no tienen entrada ARP (uno no se pregunta a sí
+    mismo por su propia MAC), así que sin esto salen con la columna vacía."""
+    try:
+        salida = subprocess.run(["ip", "-4", "-o", "addr", "show"], env=ENV_C,
+                                capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return set()
+    return {l.split()[3].split("/")[0] for l in salida.splitlines() if len(l.split()) > 3}
+
+def aleatoria(mac):
+    """MAC inventada por el equipo (Android/iOS/Windows desde ~2020): el 2º
+    dígito es 2, 6, A o E. No sirve como identidad estable — se marca con ~."""
+    return len(mac) > 1 and mac[1] in "26AE"
+
+def prefijo_local():
+    """Los tres primeros octetos de la IP de esta máquina, para que `.65` sea
+    suficiente. Va por la ruta por defecto y no por la lista de IP a secas: con
+    una VPN levantada esta máquina tiene varias, y la que importa es la de la
+    red de verdad."""
+    try:
+        salida = subprocess.run(["ip", "-4", "route", "get", "1.1.1.1"], env=ENV_C,
+                                capture_output=True, text=True, timeout=5).stdout.split()
+        if "src" in salida:
+            return salida[salida.index("src") + 1].rsplit(".", 1)[0]
+    except Exception:
+        pass
+    for ip in sorted(ips_propias()):
+        if not ip.startswith("127."):
+            return ip.rsplit(".", 1)[0]
+    return None
+
+def resolver(objetivo):
+    """Un `.65`, una IP o un nombre -> (IP, error). El nombre va por `getent
+    hosts` y no por socket: un subproceso sí se puede matar."""
+    if objetivo.startswith("."):
+        pre = prefijo_local()
+        if not pre:
+            return None, t("sin_ip_propia")
+        objetivo = pre + objetivo
+    try:
+        return str(ipaddress.ip_address(objetivo)), None
+    except ValueError:
+        pass
+    try:
+        salida = subprocess.run(["getent", "hosts", objetivo], env=ENV_C,
+                                capture_output=True, text=True, timeout=5).stdout.split()
+        if salida:
+            return salida[0], None
+    except Exception:
+        pass
+    return None, t("no_resuelve", o=objetivo)
+
+def mac_de(ip):
+    """MAC de una IP. Si la ARP está fría le manda un ping para calentarla, que
+    es justo lo que hace el barrido sin darse cuenta."""
+    mac = macs_arp().get(ip)
+    if mac:
+        return mac
+    subprocess.run(["ping", "-c", "1", "-W", "1", ip], env=ENV_C,
+                   capture_output=True, timeout=3)
+    return macs_arp().get(ip)
+
+def apodar(objetivo, nombre):
+    """`mping app 5 nombre` (fila del último barrido) o `mping app .65 nombre`
+    (IP o nombre directo, sin barrer antes)."""
+    if objetivo.isdigit():
+        try:
+            est = json.load(open(ESTADO))
+        except Exception:
+            print(rojo(t("sin_barrido"))); print(dim(t("sin_barrido2"))); return 1
+        filas = est.get("filas", [])
+        pos = int(objetivo)
+        if not (1 <= pos <= len(filas)):
+            print(rojo(t("no_existe_fila", n=len(filas), p=pos))); return 1
+        f = filas[pos - 1]
+        ip, mac = f["ip"], f.get("mac")
+    else:
+        ip, err = resolver(objetivo)
+        if err:
+            print(rojo("  " + err)); return 1
+        if ip in ips_propias():
+            mac = None
+        else:
+            mac = mac_de(ip)
+            if not mac:
+                print(rojo(t("sin_arp", ip=ip)))
+                print(dim(t("sin_arp2"))); print(dim(t("sin_arp3")))
+    clave = (mac or ip).upper()
+    porque = t("por_mac") if mac else t("por_ip")
+    linea = f"{clave} | {nombre} | ? | {t('apodado')} {time.strftime('%F')}"
+    os.makedirs(os.path.dirname(CONOCIDOS), exist_ok=True)
+    try:
+        lineas = open(CONOCIDOS).read().splitlines()
+    except FileNotFoundError:
+        lineas = [t("cabecera_conf")]
+    for i, l in enumerate(lineas):
+        if l.strip().upper().startswith(clave + " ") or l.split("|")[0].strip().upper() == clave:
+            lineas[i] = linea; break
+    else:
+        lineas.append(linea)
+    open(CONOCIDOS, "w").write("\n".join(lineas) + "\n")
+    print(f"  {verde('✔')} {ip} {dim('(' + porque + ' ' + clave + ')')} → {bold(nombre)}")
+    print(dim(t("guardado", f=CONOCIDOS)))
+    return 0
+
+# ── destinos ──────────────────────────────────────────────────────────────────
+def expandir(arg):
+    """Un argumento -> lista de destinos. CIDR, rangos, llaves o nombre pelado."""
+    # llaves: 192.168.1.{1,2,3} o {1..10}  (solo llegan acá si venían comilladas)
+    m = re.search(r"\{([^}]*)\}", arg)
+    if m:
+        piezas = []
+        for parte in m.group(1).split(","):
+            r = re.fullmatch(r"(\d+)\.\.(\d+)", parte.strip())
+            if r:
+                piezas += [str(n) for n in range(int(r.group(1)), int(r.group(2)) + 1)]
+            elif parte.strip():
+                piezas.append(parte.strip())
+        out = []
+        for p in piezas:
+            out += expandir(arg[:m.start()] + p + arg[m.end():])
+        return out
+    # CIDR
+    if "/" in arg:
+        red = ipaddress.ip_network(arg, strict=False)
+        if red.num_addresses <= 2:
+            return [str(h) for h in red]
+        return [str(h) for h in red.hosts()]
+    # rango final: 192.168.1.10-40
+    r = re.fullmatch(r"(.+\.)(\d+)-(\d+)", arg)
+    if r:
+        base, a, b = r.group(1), int(r.group(2)), int(r.group(3))
+        return [f"{base}{n}" for n in range(a, min(b, 255) + 1)]
+    return [arg]
+
+# ── estado por destino ────────────────────────────────────────────────────────
+class Host:
+    def __init__(self, nombre, color):
+        self.nombre, self.color = nombre, color
+        self.enviados = self.recibidos = 0
+        self.tiempos, self.serie, self.error = [], [], None
+        self.seq = 0
+    def etiqueta(self, ancho):
+        return c(self.nombre.ljust(ancho), self.color)
+    @property
+    def perdidos(self): return self.enviados - self.recibidos
+    @property
+    def perdida(self):  return 100.0 * self.perdidos / self.enviados if self.enviados else 0.0
+
+RE_OK   = re.compile(r"icmp_seq=(\d+).*?time=([\d.]+)\s*ms")
+RE_NOOK = re.compile(r"no answer yet for icmp_seq=(\d+)")
+RE_UNRE = re.compile(r"icmp_seq=(\d+).*?(Destination .*Unreachable|Time to live exceeded)")
+
+# ── modo flujo ────────────────────────────────────────────────────────────────
+# Una fila por destino que se redibuja en el sitio, en vez de scroll infinito:
+# con 4 equipos a la vez el log vertical es ilegible — se pierde de vista quién
+# es quién. Acá el ojo vuelve siempre a la misma línea. El historial no se
+# pierde: vive en la chispa de la derecha.
+
+class Pintor:
+    """Redibuja N líneas en el mismo lugar subiendo el cursor. Nada de curses:
+    esto tiene que poder convivir con un Ctrl-C y dejar la tabla en pantalla."""
+    def __init__(self):
+        self.n = 0
+        if not PLANO: sys.stdout.write("\033[?25l")   # esconde el cursor
+
+    def pinta(self, lineas):
+        buf = [f"\033[{self.n}A"] if self.n else []
+        for l in lineas: buf.append("\033[2K" + l + "\n")
+        for _ in range(max(0, self.n - len(lineas))): buf.append("\033[2K\n")
+        self.n = max(self.n, len(lineas))
+        sys.stdout.write("".join(buf)); sys.stdout.flush()
+
+    def cierra(self):
+        if not PLANO: sys.stdout.write("\033[?25h"); sys.stdout.flush()
+
+# La identidad (MAC + nombre de conocidos.conf) también sirve en el flujo, pero
+# la tabla se repinta 5 veces por segundo: leer `ip neigh` en cada cuadro sería
+# un subproceso cada 200 ms. Se refresca cada 5 s y se guarda acá.
+_ident = {"t": 0.0, "arp": {}, "conocidos": {}, "propias": set()}
+
+def identidad(h):
+    """-> (nombre lindo o '', es_mío) para un destino del flujo."""
+    if time.time() - _ident["t"] > 5:
+        _ident.update(t=time.time(), arp=macs_arp(),
+                      conocidos=leer_conocidos(), propias=ips_propias())
+    n = h.nombre
+    if n in _ident["propias"]: return t("esta_maquina"), True
+    mac = _ident["arp"].get(n)
+    if mac and mac in _ident["conocidos"]: return _ident["conocidos"][mac], True
+    if n.upper() in _ident["conocidos"]:   return _ident["conocidos"][n.upper()], True
+    return (mac or ""), False          # sin nombre, al menos muestra la MAC
+
+def tabla_flujo(hosts, intervalo, t0):
+    anc = min(max(max(len(h.nombre) for h in hosts), 12), 28)
+    ident = {h.nombre: identidad(h) for h in hosts}
+    anc_id = min(max((len(v[0]) for v in ident.values()), default=0), 18)
+    cols = shutil.get_terminal_size((100, 24)).columns
+    minmax = cols >= 92                     # en terminal angosta se cae esta columna
+    usado = 4 + anc + 2 + 5 + 2 + 9 + 2 + 7 + 2 + 5 + (20 if minmax else 0) \
+            + (anc_id + 2 if anc_id else 0)
+    anc_ch = max(6, min(40, cols - usado - 3))
+
+    cab = f"    {bold(t('destino').ljust(anc))}"
+    if anc_id: cab += "  " + bold(t("quien").ljust(anc_id))
+    cab += f"  {bold(t('seq'))}  {bold(t('ultimo'))}  {bold(t('paq'))}  {bold(t('perd'))}"
+    if minmax: cab += "  " + bold(t("minmax").ljust(18))
+    cab += "  " + bold(t("historial"))
+    lineas = [cab, dim("  " + "─" * min(cols - 4, usado + anc_ch))]
+
+    for h in hosts:
+        if h.error:
+            lineas.append(f"  {rojo('○')} {c(h.nombre.ljust(anc), h.color)}  {rojo(h.error[:cols-anc-8])}")
+            continue
+        ult = h.serie[-1] if h.serie else "nada"
+        if ult == "nada":   punto, ultimo = dim("·"), dim(t("nada"))
+        elif ult is None:   punto, ultimo = rojo("○"), rojo(t("perdido"))
+        else:               punto, ultimo = verde("●"), color_ms(ult)
+        p = h.perdida
+        ptxt = f"{p:.0f}%".rjust(4)
+        perd = verde(ptxt) if p == 0 else (ambar if p < 20 else rojo)(ptxt)
+        fila = f"  {punto} {c(h.nombre.ljust(anc), h.color)}"
+        if anc_id:
+            nom, propio = ident[h.nombre]
+            txt = nom[:anc_id].ljust(anc_id)
+            fila += "  " + (cian(txt) if propio else dim(txt))
+        fila += (f"  {dim(str(h.seq).rjust(5))}  {ultimo}  "
+                 f"{dim(f'{h.recibidos}/{h.enviados}'.rjust(6))}  {perd}")
+        if minmax:
+            if h.tiempos:
+                ts = sorted(h.tiempos)
+                txt = f"{ts[0]:.1f}/{sum(ts)/len(ts):.1f}/{ts[-1]:.1f}"
+            else:
+                txt = "—"
+            fila += "  " + dim(txt.ljust(18))
+        fila += "  " + chispa(h.serie, anc_ch)
+        lineas.append(fila)
+
+    lineas.append(dim(t("pie_flujo", s=time.time()-t0, i=intervalo, esc=leyenda_escala())))
+    return lineas
+
+async def flujo(hosts, intervalo, cuenta, espera, tabla):
+    ancho = min(max(max(len(h.nombre) for h in hosts), 12), 28)
+    if not tabla:
+        print(dim(t("cabecera_log", n=len(hosts), i=intervalo)))
+
+    async def uno(h):
+        cmd = ["ping", "-n", "-O", "-i", str(intervalo), "-W", str(espera), h.nombre]
+        if cuenta: cmd[1:1] = ["-c", str(cuenta)]
+        p = await asyncio.create_subprocess_exec(
+            *cmd, env=ENV_C,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        h.proc = p
+        vistos = {}          # seq -> índice en la serie, para corregir tardíos
+        while True:
+            linea = await p.stdout.readline()
+            if not linea: break
+            txt = linea.decode(errors="replace").strip()
+            m = RE_OK.search(txt)
+            if m:
+                seq, ms = int(m.group(1)), float(m.group(2))
+                h.seq = seq; h.recibidos += 1; h.tiempos.append(ms)
+                if seq in vistos:            # llegó tarde, tras el "sin respuesta"
+                    h.serie[vistos[seq]] = ms
+                    if not tabla:
+                        print(f"{h.etiqueta(ancho)} {dim('seq')} {seq:<5} {color_ms(ms)}  {ambar(t('tardio'))}")
+                else:
+                    h.enviados += 1; h.serie.append(ms)
+                    if not tabla:
+                        print(f"{h.etiqueta(ancho)} {dim('seq')} {seq:<5} {color_ms(ms)}  {chispa(h.serie)}")
+                continue
+            m = RE_NOOK.search(txt) or RE_UNRE.search(txt)
+            if m:
+                seq = int(m.group(1))
+                if seq in vistos: continue
+                h.seq = seq; h.enviados += 1
+                vistos[seq] = len(h.serie); h.serie.append(None)
+                if not tabla:
+                    motivo = t("sin_respuesta")
+                    u = RE_UNRE.search(txt)
+                    if u: motivo = u.group(2).lower()
+                    print(f"{h.etiqueta(ancho)} {dim('seq')} {seq:<5} {rojo('  ✗ ' + motivo)}")
+                continue
+            m = re.search(r"(\d+) packets transmitted", txt)
+            if m:                       # el total real lo dice ping al cerrar
+                h.enviados = max(h.enviados, int(m.group(1)))
+                continue
+            if txt.startswith("ping:") or "unknown host" in txt or "Name or service" in txt:
+                h.error = txt.replace("ping: ", "")
+                if not tabla: print(f"{h.etiqueta(ancho)} {rojo('✗ ' + h.error)}")
+        await p.wait()
+
+    t0 = time.time()
+    pintor = Pintor() if tabla else None
+
+    async def pintar():
+        while True:                     # 5 Hz: fluido sin parpadear ni gastar CPU
+            pintor.pinta(tabla_flujo(hosts, intervalo, t0))
+            await asyncio.sleep(0.2)
+
+    tareas = [asyncio.ensure_future(uno(h)) for h in hosts]
+    # el pintor va aparte del gather: es un bucle infinito, si entrara ahí
+    # `mping -c 5` no terminaría nunca aunque los pings ya hayan acabado
+    lapiz = asyncio.ensure_future(pintar()) if tabla else None
+    try:
+        await asyncio.gather(*tareas)
+    except asyncio.CancelledError:
+        pass
+    finally:
+        for tarea in tareas: tarea.cancel()
+        if lapiz: lapiz.cancel()
+        for h in hosts:
+            p = getattr(h, "proc", None)
+            if p and p.returncode is None:
+                try: p.terminate()
+                except ProcessLookupError: pass
+        if pintor:
+            pintor.pinta(tabla_flujo(hosts, intervalo, t0))   # última foto, ya quieta
+            pintor.cierra()
+
+def resumen_flujo(hosts):
+    ancho = min(max(max(len(h.nombre) for h in hosts), 12), 28)
+    print("\n" + bold(t("resumen")).ljust(60, "─" if not PLANO else "-"))
+    for h in hosts:
+        if h.error:
+            print(f"{h.etiqueta(ancho)} {rojo(h.error)}"); continue
+        if not h.enviados:
+            print(f"{h.etiqueta(ancho)} {dim(t('sin_paquetes'))}"); continue
+        p = h.perdida
+        txt = t("perdida", p=p).ljust(13)
+        est = verde(txt) if p == 0 else (ambar if p < 20 else rojo)(txt)
+        if h.tiempos:
+            ts = sorted(h.tiempos)
+            prom = sum(ts) / len(ts)
+            print(f"{h.etiqueta(ancho)} {h.recibidos}/{h.enviados} {t('paq_label')}  {est} "
+                  f"{dim(t('minmax_label'))} {ts[0]:.1f}/{prom:.1f}/{ts[-1]:.1f} ms "
+                  f"{dim(t('jitter'))} {max(ts)-min(ts):.1f}  {chispa(h.serie)}")
+        else:
+            print(f"{h.etiqueta(ancho)} {h.recibidos}/{h.enviados} {t('paq_label')}  {est}")
+
+# ── modo barrido ──────────────────────────────────────────────────────────────
+RE_STAT = re.compile(r"(\d+) packets transmitted, (\d+) received")
+RE_RTT  = re.compile(r"= ([\d.]+)/([\d.]+)/([\d.]+)/")
+
+async def dns_inverso(ips):
+    """DNS inverso por `getent`, no por socket: un subproceso se puede matar,
+    una llamada bloqueante al resolver del sistema no — y ahí se cuelga todo."""
+    out = {}
+    sem = asyncio.Semaphore(32)
+    async def uno(ip):
+        async with sem:
+            try:
+                p = await asyncio.create_subprocess_exec(
+                    "getent", "hosts", ip, env=ENV_C,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+                salida, _ = await asyncio.wait_for(p.communicate(), 2.0)
+                partes = salida.decode().split()
+                if len(partes) > 1 and partes[1] != ip: out[ip] = partes[1]
+            except asyncio.TimeoutError:
+                try: p.kill()
+                except ProcessLookupError: pass
+            except Exception:
+                pass
+    await asyncio.gather(*(uno(ip) for ip in ips))
+    return out
+
+async def barrido(nombres, cuenta, espera, paralelo, nombres_dns, todos):
+    sem = asyncio.Semaphore(paralelo)
+    total, hechos, vivos = len(nombres), 0, []
+    res = {}
+
+    def progreso():
+        if PLANO or not sys.stderr.isatty(): return
+        ancho = min(shutil.get_terminal_size((80, 24)).columns - 34, 40)
+        lleno = int(ancho * hechos / total)
+        barra = c("━" * lleno, "38;5;81") + dim("━" * (ancho - lleno))
+        sys.stderr.write(f"\r  {barra} {hechos}/{total}  {verde(str(len(vivos)) + ' ' + t('vivos'))}   ")
+        sys.stderr.flush()
+
+    async def uno(n):
+        nonlocal hechos
+        async with sem:
+            p = await asyncio.create_subprocess_exec(
+                "ping", "-n", "-q", "-c", str(cuenta), "-W", str(espera), "-i", "0.25", n,
+                env=ENV_C,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            salida = (await p.communicate())[0].decode(errors="replace")
+        env = rec = 0
+        m = RE_STAT.search(salida)
+        if m: env, rec = int(m.group(1)), int(m.group(2))
+        rtt = RE_RTT.search(salida)
+        res[n] = dict(env=env, rec=rec, prom=float(rtt.group(2)) if rtt else None)
+        if rec: vivos.append(n)
+        hechos += 1; progreso()
+
+    t0 = time.time()
+    progreso()
+    await asyncio.gather(*(uno(n) for n in nombres))
+    if not PLANO and sys.stderr.isatty():
+        sys.stderr.write("\r\033[2K"); sys.stderr.flush()
+
+    arp        = macs_arp()
+    propias    = ips_propias()
+    conocidos  = leer_conocidos()
+    dns        = await dns_inverso(vivos) if (nombres_dns and vivos) else {}
+
+    def clave(n):
+        try: return (0, int(ipaddress.ip_address(n)))
+        except ValueError: return (1, n)
+    filas = [n for n in sorted(nombres, key=clave) if res[n]["rec"] or todos]
+
+    # el orden de la tabla es lo que después indexa `mping app N nombre`,
+    # y vive en disco justamente para que sobreviva a un reinicio
+    try:
+        os.makedirs(os.path.dirname(ESTADO), exist_ok=True)
+        json.dump({"fecha": time.strftime("%F %T"),
+                   "filas": [{"ip": n, "mac": arp.get(n)} for n in filas]},
+                  open(ESTADO, "w"))
+    except OSError:
+        pass
+
+    if not filas:
+        print(rojo(t("nadie", n=total)) + dim(f"({time.time()-t0:.1f}s)"))
+        return
+
+    def nombre_de(n):
+        if n in propias: return t("esta_maquina"), True
+        mac = arp.get(n)
+        if mac and mac in conocidos: return conocidos[mac], True
+        if n in conocidos:           return conocidos[n], True
+        if n in dns:                 return dns[n], False
+        return "", False
+
+    if PLANO:
+        for i, n in enumerate(filas, 1):
+            r = res[n]
+            print(f"{i}\t{n}\t{'up' if r['rec'] else 'down'}\t"
+                  f"{r['prom'] if r['prom'] is not None else ''}\t{r['rec']}/{r['env']}\t"
+                  f"{arp.get(n,'')}\t{nombre_de(n)[0]}")
+        return
+
+    anc_h = max(max(len(n) for n in filas), 9)
+    anc_i = len(str(len(filas)))
+    hay_mac = any(n in arp for n in filas)
+    anc_m = 18 if hay_mac else 0
+    anc_n = max((len(nombre_de(n)[0]) for n in filas), default=0)
+
+    cab = (f"  {'#'.rjust(anc_i)}   {bold(t('destino').ljust(anc_h))}  "
+           f"{bold(t('latencia').rjust(9))}  {bold(t('paq_corto'))}")
+    if anc_m: cab += "  " + bold(t("mac").ljust(anc_m))
+    if anc_n: cab += "  " + bold(t("nombre"))
+    regla = dim("  " + "─" * (anc_i + anc_h + 22 + anc_m + anc_n))
+    print(cab); print(regla)
+
+    for i, n in enumerate(filas, 1):
+        r = res[n]
+        if r["rec"]:
+            punto, lat = verde("●"), color_ms(r["prom"])   # ya viene de ancho fijo
+            paq_txt = f"{r['rec']}/{r['env']}"
+            paq = dim(paq_txt) if r["rec"] == r["env"] else ambar(paq_txt)
+        else:
+            punto, lat, paq = rojo("○"), dim("     —   "), rojo(f"0/{r['env']}")
+        linea = f"  {dim(str(i).rjust(anc_i))} {punto} {n.ljust(anc_h)}  {lat}  {paq}"
+        if anc_m:
+            mac = arp.get(n, "")
+            txt = (mac + ("~" if mac and aleatoria(mac) else "")).ljust(anc_m)
+            linea += "  " + (dim(txt) if mac else txt)
+        nom, propio = nombre_de(n)
+        if nom: linea += "  " + (cian(nom) if propio else dim(nom))
+        print(linea)
+
+    print(regla)
+    print(t("resumen_barrido", v=verde(str(len(vivos))), n=total) +
+          dim(t("pie_barrido", s=time.time()-t0, c=cuenta)))
+    if hay_mac:
+        print(dim(t("leyenda_mac")) + dim(t("leyenda_apodo")) +
+              bold("mping app <#> <nombre>") + dim(t("leyenda_apodo2")) +
+              bold("mping app <IP> <nombre>"))
+
+# ── main ──────────────────────────────────────────────────────────────────────
+SUBCOMANDOS = ("app", "apodo", "apodar", "nombre", "name", "nick", "label")
+
+def construir_parser():
+    ap = argparse.ArgumentParser(prog="mping", add_help=False, description=t("desc"))
+    ap.add_argument("destinos", nargs="*")
+    ap.add_argument("-c", "--cuenta", "--count", type=int, default=None, help=t("h_cuenta"))
+    ap.add_argument("-i", "--intervalo", "--interval", type=float, default=1.0, help=t("h_intervalo"))
+    ap.add_argument("-W", "--espera", "--wait", "--timeout", type=float, default=1.0, help=t("h_espera"))
+    ap.add_argument("-p", "--paralelo", "--parallel", type=int, default=96, help=t("h_paralelo"))
+    ap.add_argument("-b", "--barrido", "--sweep", "--scan", action="store_true", help=t("h_barrido"))
+    ap.add_argument("-f", "--flujo", "--stream", "--live", action="store_true", help=t("h_flujo"))
+    ap.add_argument("-t", "--todos", "--all", action="store_true", help=t("h_todos"))
+    ap.add_argument("-n", "--nombres", "--names", "--dns", action="store_true", help=t("h_nombres"))
+    ap.add_argument("-r", "--relativo", "--relative", action="store_true", help=t("h_relativo"))
+    ap.add_argument("-l", "--lineas", "--lines", "--log", action="store_true", help=t("h_lineas"))
+    ap.add_argument("--plano", "--plain", action="store_true", help=t("h_plano"))
+    ap.add_argument("--idioma", "--lang", default=None, help=t("h_idioma"))
+    ap.add_argument("-h", "--ayuda", "--help", action="store_true")
+    return ap
+
+def main():
+    global PLANO, RELATIVO, IDIOMA
+    IDIOMA = elegir_idioma()
+    PLANO = not sys.stdout.isatty() or bool(os.environ.get("NO_COLOR"))
+
+    # --idioma tiene que aplicarse antes de construir el parser, porque hasta la
+    # ayuda de cada flag sale de t(); por eso se lee a mano y no por argparse.
+    args = sys.argv[1:]
+    for i, a in enumerate(args):
+        if a in ("--idioma", "--lang") and i + 1 < len(args):
+            IDIOMA = elegir_idioma(args[i + 1])
+        elif a.startswith(("--idioma=", "--lang=")):
+            IDIOMA = elegir_idioma(a.split("=", 1)[1])
+
+    if len(sys.argv) > 1 and sys.argv[1] in SUBCOMANDOS:
+        if len(sys.argv) < 4:
+            print(rojo(t("uso_app"))); print(dim(t("uso_app2"))); print(dim(t("uso_app3")))
+            sys.exit(1)
+        sys.exit(apodar(sys.argv[2], " ".join(sys.argv[3:])))
+
+    a = construir_parser().parse_args()
+
+    if a.ayuda or not a.destinos:
+        print(t("ayuda"), end="")
+        sys.exit(0 if a.ayuda else 1)
+
+    PLANO = a.plano or not sys.stdout.isatty() or bool(os.environ.get("NO_COLOR"))
+    RELATIVO = a.relativo
+
+    nombres, vistos = [], set()
+    for d in a.destinos:
+        for n in expandir(d):
+            if n not in vistos: vistos.add(n); nombres.append(n)
+
+    modo_flujo = a.flujo or (len(nombres) <= 12 and not a.barrido)
+    if modo_flujo:
+        hosts = [Host(n, PALETA[i % len(PALETA)]) for i, n in enumerate(nombres)]
+        loop = asyncio.new_event_loop()
+        tabla = not (a.lineas or PLANO)
+        tarea = loop.create_task(flujo(hosts, a.intervalo, a.cuenta, a.espera, tabla))
+        try:
+            loop.run_until_complete(tarea)
+        except KeyboardInterrupt:
+            tarea.cancel()
+            try: loop.run_until_complete(tarea)
+            except (KeyboardInterrupt, asyncio.CancelledError): pass
+        finally:
+            loop.close()
+        if not tabla:                # en tabla el resumen ya está en pantalla
+            resumen_flujo(hosts)
+    else:
+        cuenta = a.cuenta or 2
+        try:
+            asyncio.run(barrido(nombres, cuenta, a.espera, a.paralelo, a.nombres, a.todos))
+        except KeyboardInterrupt:
+            print(rojo(t("cortado")))
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL) if hasattr(signal, "SIGPIPE") else None
+    main()

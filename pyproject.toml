@@ -1,0 +1,12 @@
+[project]
+name = "mping"
+version = "1.0.0"
+description = "Ping many hosts in parallel, with a live table, MACs and nicknames"
+requires-python = ">=3.9"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
